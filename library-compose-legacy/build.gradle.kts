@@ -9,7 +9,7 @@ android {
 
     sourceSets {
         getByName("main") {
-            java.directories.add("../library-compose/src/main/java")
+            kotlin.directories.add("../library-compose/src/main/java")
         }
     }
 
