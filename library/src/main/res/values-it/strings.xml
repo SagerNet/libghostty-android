@@ -1,0 +1,10 @@
+<resources>
+    <string name="ghostty_paste_unsafe_title">Incollare questo testo?</string>
+    <string name="ghostty_paste_unsafe_message">Il testo degli Appunti contiene interruzioni di riga o una sequenza di escape che termina la modalità di incollaggio. La shell esegue ogni riga come un comando.</string>
+    <string name="ghostty_open_link">Apri link</string>
+    <string name="ghostty_clipboard_read_title">Consentire l\'accesso agli Appunti?</string>
+    <string name="ghostty_clipboard_read_message">Il programma remoto richiede il contenuto degli Appunti. Le richieste successive in questa sessione riceveranno risposta senza chiedere conferma.</string>
+    <string name="ghostty_clipboard_read_allow">Consenti</string>
+    <string name="ghostty_session_ended">Sessione terminata</string>
+    <string name="ghostty_press_any_key">premi un tasto qualsiasi</string>
+</resources>

@@ -1,0 +1,10 @@
+<resources>
+    <string name="ghostty_paste_unsafe_title">Вставить этот текст?</string>
+    <string name="ghostty_paste_unsafe_message">Текст в буфере обмена содержит разрывы строк или управляющую последовательность, завершающую режим вставки. Оболочка выполняет каждую строку как команду.</string>
+    <string name="ghostty_open_link">Открыть ссылку</string>
+    <string name="ghostty_clipboard_read_title">Разрешить доступ к буферу обмена?</string>
+    <string name="ghostty_clipboard_read_message">Удалённая программа запрашивает содержимое буфера обмена. Дальнейшие запросы в этом сеансе будут обрабатываться без подтверждения.</string>
+    <string name="ghostty_clipboard_read_allow">Разрешить</string>
+    <string name="ghostty_session_ended">Сеанс завершён</string>
+    <string name="ghostty_press_any_key">нажмите любую клавишу</string>
+</resources>

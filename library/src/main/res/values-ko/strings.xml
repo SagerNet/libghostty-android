@@ -1,0 +1,10 @@
+<resources>
+    <string name="ghostty_paste_unsafe_title">이 텍스트를 붙여넣을까요?</string>
+    <string name="ghostty_paste_unsafe_message">클립보드 텍스트에 줄바꿈 문자 또는 붙여넣기 모드를 종료하는 이스케이프 시퀀스가 포함되어 있습니다. 셸은 각 줄을 명령으로 실행합니다.</string>
+    <string name="ghostty_open_link">링크 열기</string>
+    <string name="ghostty_clipboard_read_title">클립보드 액세스를 허용할까요?</string>
+    <string name="ghostty_clipboard_read_message">원격 프로그램이 클립보드 내용을 요청했습니다. 이 세션의 이후 요청에는 묻지 않고 응답합니다.</string>
+    <string name="ghostty_clipboard_read_allow">허용</string>
+    <string name="ghostty_session_ended">세션 종료됨</string>
+    <string name="ghostty_press_any_key">아무 키나 누르세요</string>
+</resources>

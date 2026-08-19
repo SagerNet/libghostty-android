@@ -1,0 +1,10 @@
+<resources>
+    <string name="ghostty_paste_unsafe_title">Wkleić ten tekst?</string>
+    <string name="ghostty_paste_unsafe_message">Tekst w schowku zawiera znaki nowego wiersza lub sekwencję sterującą kończącą tryb wklejania. Powłoka wykonuje każdy wiersz jako polecenie.</string>
+    <string name="ghostty_open_link">Otwórz link</string>
+    <string name="ghostty_clipboard_read_title">Zezwolić na dostęp do schowka?</string>
+    <string name="ghostty_clipboard_read_message">Zdalny program żąda zawartości schowka. Kolejne żądania w tej sesji będą obsługiwane bez pytania.</string>
+    <string name="ghostty_clipboard_read_allow">Zezwól</string>
+    <string name="ghostty_session_ended">Sesja zakończona</string>
+    <string name="ghostty_press_any_key">naciśnij dowolny klawisz</string>
+</resources>

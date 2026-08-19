@@ -1,0 +1,10 @@
+<resources>
+    <string name="ghostty_paste_unsafe_title">このテキストを貼り付けますか？</string>
+    <string name="ghostty_paste_unsafe_message">クリップボードのテキストに改行、または貼り付けモードを終了させるエスケープシーケンスが含まれています。シェルは各行をコマンドとして実行します。</string>
+    <string name="ghostty_open_link">リンクを開く</string>
+    <string name="ghostty_clipboard_read_title">クリップボードへのアクセスを許可しますか？</string>
+    <string name="ghostty_clipboard_read_message">リモートプログラムがクリップボードの内容を要求しています。このセッションでの以降の要求には、確認なしで応答します。</string>
+    <string name="ghostty_clipboard_read_allow">許可</string>
+    <string name="ghostty_session_ended">セッションが終了しました</string>
+    <string name="ghostty_press_any_key">何かキーを押してください</string>
+</resources>

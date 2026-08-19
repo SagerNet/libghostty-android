@@ -1,0 +1,10 @@
+<resources>
+    <string name="ghostty_paste_unsafe_title">Greamaigh an téacs seo?</string>
+    <string name="ghostty_paste_unsafe_message">Tá bristeacha líne sa téacs gearrthaisce, nó seicheamh éalaithe a chríochnaíonn an mód greamaithe. Ritheann an bhlaosc gach líne mar ordú.</string>
+    <string name="ghostty_open_link">Oscail an nasc</string>
+    <string name="ghostty_clipboard_read_title">Ceadaigh rochtain ar an ngearrthaisce?</string>
+    <string name="ghostty_clipboard_read_message">Iarrann an ríomhchlár cianda ábhar an ghearrthaisce. Freagrófar iarratais eile sa seisiún seo gan fiafraí.</string>
+    <string name="ghostty_clipboard_read_allow">Ceadaigh</string>
+    <string name="ghostty_session_ended">Seisiún críochnaithe</string>
+    <string name="ghostty_press_any_key">brúigh eochair ar bith</string>
+</resources>

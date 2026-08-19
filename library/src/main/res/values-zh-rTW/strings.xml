@@ -1,0 +1,10 @@
+<resources>
+    <string name="ghostty_paste_unsafe_title">貼上此文字？</string>
+    <string name="ghostty_paste_unsafe_message">剪貼簿文字包含換行符，或包含結束貼上模式的跳脫序列。Shell 會將每一行作為命令執行。</string>
+    <string name="ghostty_open_link">開啟連結</string>
+    <string name="ghostty_clipboard_read_title">允許讀取剪貼簿？</string>
+    <string name="ghostty_clipboard_read_message">遠端程式請求讀取剪貼簿內容。本工作階段中的後續請求將不再詢問。</string>
+    <string name="ghostty_clipboard_read_allow">允許</string>
+    <string name="ghostty_session_ended">工作階段已結束</string>
+    <string name="ghostty_press_any_key">按任意鍵</string>
+</resources>

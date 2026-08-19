@@ -1,0 +1,10 @@
+<resources>
+    <string name="ghostty_paste_unsafe_title">Diesen Text einfügen?</string>
+    <string name="ghostty_paste_unsafe_message">Der Text in der Zwischenablage enthält Zeilenumbrüche oder eine Escape-Sequenz, die den Einfügemodus beendet. Die Shell führt jede Zeile als Befehl aus.</string>
+    <string name="ghostty_open_link">Link öffnen</string>
+    <string name="ghostty_clipboard_read_title">Zugriff auf die Zwischenablage erlauben?</string>
+    <string name="ghostty_clipboard_read_message">Das entfernte Programm fordert den Inhalt der Zwischenablage an. Weitere Anfragen in dieser Sitzung werden ohne Nachfrage beantwortet.</string>
+    <string name="ghostty_clipboard_read_allow">Erlauben</string>
+    <string name="ghostty_session_ended">Sitzung beendet</string>
+    <string name="ghostty_press_any_key">beliebige Taste drücken</string>
+</resources>

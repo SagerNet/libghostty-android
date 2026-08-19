@@ -1,0 +1,10 @@
+<resources>
+    <string name="ghostty_paste_unsafe_title">Zalijepiti ovaj tekst?</string>
+    <string name="ghostty_paste_unsafe_message">Tekst u međuspremniku sadrži prijelome redaka ili escape sekvencu koja prekida način lijepljenja. Ljuska izvršava svaki redak kao naredbu.</string>
+    <string name="ghostty_open_link">Otvori poveznicu</string>
+    <string name="ghostty_clipboard_read_title">Dopustiti pristup međuspremniku?</string>
+    <string name="ghostty_clipboard_read_message">Udaljeni program traži sadržaj međuspremnika. Na daljnje zahtjeve u ovoj sesiji odgovorit će se bez pitanja.</string>
+    <string name="ghostty_clipboard_read_allow">Dopusti</string>
+    <string name="ghostty_session_ended">Sesija je završila</string>
+    <string name="ghostty_press_any_key">pritisnite bilo koju tipku</string>
+</resources>

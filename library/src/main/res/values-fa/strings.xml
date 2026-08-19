@@ -1,0 +1,10 @@
+<resources>
+    <string name="ghostty_paste_unsafe_title">این متن جای‌گذاری شود؟</string>
+    <string name="ghostty_paste_unsafe_message">متن کلیپ‌بورد شامل شکست خط یا دنباله گریزی است که حالت جای‌گذاری را پایان می‌دهد. شل هر خط را به‌عنوان یک فرمان اجرا می‌کند.</string>
+    <string name="ghostty_open_link">باز کردن پیوند</string>
+    <string name="ghostty_clipboard_read_title">دسترسی به کلیپ‌بورد مجاز شود؟</string>
+    <string name="ghostty_clipboard_read_message">برنامه راه دور محتوای کلیپ‌بورد را درخواست می‌کند. درخواست‌های بعدی در این جلسه بدون پرسش پاسخ داده می‌شوند.</string>
+    <string name="ghostty_clipboard_read_allow">اجازه دادن</string>
+    <string name="ghostty_session_ended">جلسه پایان یافت</string>
+    <string name="ghostty_press_any_key">هر کلیدی را فشار دهید</string>
+</resources>

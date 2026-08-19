@@ -1,0 +1,10 @@
+<resources>
+    <string name="ghostty_paste_unsafe_title">להדביק את הטקסט הזה?</string>
+    <string name="ghostty_paste_unsafe_message">הטקסט בלוח ההעתקה מכיל מעברי שורה, או רצף בריחה שמסיים את מצב ההדבקה. המעטפת מריצה כל שורה כפקודה.</string>
+    <string name="ghostty_open_link">פתיחת קישור</string>
+    <string name="ghostty_clipboard_read_title">לאפשר גישה ללוח ההעתקה?</string>
+    <string name="ghostty_clipboard_read_message">התוכנית המרוחקת מבקשת את תוכן לוח ההעתקה. בקשות נוספות בהפעלה זו ייענו ללא שאלה.</string>
+    <string name="ghostty_clipboard_read_allow">אישור</string>
+    <string name="ghostty_session_ended">ההפעלה הסתיימה</string>
+    <string name="ghostty_press_any_key">יש להקיש על מקש כלשהו</string>
+</resources>

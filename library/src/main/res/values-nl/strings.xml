@@ -1,0 +1,10 @@
+<resources>
+    <string name="ghostty_paste_unsafe_title">Deze tekst plakken?</string>
+    <string name="ghostty_paste_unsafe_message">De tekst op het klembord bevat regeleinden of een escapereeks die de plakmodus beëindigt. De shell voert elke regel uit als een opdracht.</string>
+    <string name="ghostty_open_link">Link openen</string>
+    <string name="ghostty_clipboard_read_title">Toegang tot het klembord toestaan?</string>
+    <string name="ghostty_clipboard_read_message">Het externe programma vraagt om de inhoud van het klembord. Verdere verzoeken in deze sessie worden zonder vragen beantwoord.</string>
+    <string name="ghostty_clipboard_read_allow">Toestaan</string>
+    <string name="ghostty_session_ended">Sessie beëindigd</string>
+    <string name="ghostty_press_any_key">druk op een willekeurige toets</string>
+</resources>
