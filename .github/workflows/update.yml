@@ -13,20 +13,29 @@ permissions:
   contents: write
   pull-requests: write
 
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 env:
   ZIG_VERSION: 0.16.0
-  NDK_VERSION: 28.0.13004108
 
 jobs:
-  update:
+  resolve:
     runs-on: ubuntu-latest
+    outputs:
+      head: ${{ steps.upstream.outputs.head }}
+      short: ${{ steps.upstream.outputs.short }}
+      changed: ${{ steps.upstream.outputs.changed }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Resolve upstream commit
         id: upstream
+        env:
+          GHOSTTY_REF_INPUT: ${{ inputs.ghostty_ref }}
         run: |
-          if [ -n "${{ inputs.ghostty_ref }}" ]; then
-            head="${{ inputs.ghostty_ref }}"
+          if [ -n "$GHOSTTY_REF_INPUT" ]; then
+            head="$GHOSTTY_REF_INPUT"
           else
             head=$(git ls-remote https://github.com/ghostty-org/ghostty.git refs/heads/main | cut -f1)
           fi
@@ -38,41 +47,42 @@ jobs:
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
+
+  update:
+    needs: resolve
+    if: needs.resolve.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
       - name: Bump GHOSTTY_REF
-        if: steps.upstream.outputs.changed == 'true'
-        run: printf '%s\n' "${{ steps.upstream.outputs.head }}" > GHOSTTY_REF
+        run: printf '%s\n' "${{ needs.resolve.outputs.head }}" > GHOSTTY_REF
       - uses: actions/setup-java@v5
-        if: steps.upstream.outputs.changed == 'true'
         with:
           distribution: temurin
           java-version: 17
       - uses: mlugg/setup-zig@v2
-        if: steps.upstream.outputs.changed == 'true'
         with:
           version: ${{ env.ZIG_VERSION }}
+      - name: Cache libghostty-vt objects
+        uses: actions/cache@v6
+        with:
+          path: build/ghostty/zig-cache
+          key: ghostty-vt-${{ env.ZIG_VERSION }}-${{ hashFiles('GHOSTTY_REF', 'patches/ghostty/*.patch') }}
+          restore-keys: ghostty-vt-${{ env.ZIG_VERSION }}-
       - name: Install NDK
-        if: steps.upstream.outputs.changed == 'true'
-        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" > /dev/null
-      - uses: gradle/actions/setup-gradle@v4
-        if: steps.upstream.outputs.changed == 'true'
+        run: |
+          ndk=$(sed -n 's/.*ndkVersion = "\(.*\)".*/\1/p' library/build.gradle.kts)
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$ndk" > /dev/null
+      - uses: gradle/actions/setup-gradle@v5
       - name: Build with new commit
-        if: steps.upstream.outputs.changed == 'true'
         run: ./gradlew :library:assembleRelease
       - name: Check patch assumptions
-        if: steps.upstream.outputs.changed == 'true'
         run: scripts/check-patch-assumptions.sh build/ghostty/source
       - name: Create pull request
-        if: steps.upstream.outputs.changed == 'true'
-        uses: peter-evans/create-pull-request@v7
+        uses: peter-evans/create-pull-request@v8
         with:
           branch: update-ghostty
-          commit-message: "Update ghostty to ${{ steps.upstream.outputs.short }}"
-          title: "Update ghostty to ${{ steps.upstream.outputs.short }}"
-          body: |
-            Bumps `GHOSTTY_REF` to [`${{ steps.upstream.outputs.short }}`](https://github.com/ghostty-org/ghostty/commit/${{ steps.upstream.outputs.head }}).
-
-            All six patches applied cleanly, the patch assumption check passed,
-            and `:library:assembleRelease` succeeded in this workflow run
-            (${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
-            The instrumented test suite runs on push to main after merge.
+          commit-message: "Update ghostty to ${{ needs.resolve.outputs.short }}"
+          title: "Update ghostty to ${{ needs.resolve.outputs.short }}"
+          body: https://github.com/ghostty-org/ghostty/commit/${{ needs.resolve.outputs.head }}
           add-paths: GHOSTTY_REF

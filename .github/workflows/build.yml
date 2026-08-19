@@ -12,15 +12,18 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   ZIG_VERSION: 0.16.0
-  NDK_VERSION: 28.0.13004108
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -28,9 +31,18 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
+      - name: Cache libghostty-vt objects
+        uses: actions/cache@v6
+        with:
+          path: build/ghostty/zig-cache
+          key: ghostty-vt-${{ env.ZIG_VERSION }}-${{ hashFiles('GHOSTTY_REF', 'patches/ghostty/*.patch') }}
+          restore-keys: ghostty-vt-${{ env.ZIG_VERSION }}-
       - name: Install NDK
-        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" > /dev/null
-      - uses: gradle/actions/setup-gradle@v4
+        run: |
+          ndk=$(sed -n 's/.*ndkVersion = "\(.*\)".*/\1/p' library/build.gradle.kts)
+          echo "NDK_VERSION=$ndk" >> "$GITHUB_ENV"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$ndk" > /dev/null
+      - uses: gradle/actions/setup-gradle@v5
       - name: Build
         run: ./gradlew :library:assembleRelease
       - name: Check patch assumptions
@@ -46,7 +58,7 @@ jobs:
           assert aligns and min(aligns) >= 16384, aligns'
             echo "$so OK"
           done
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: library-release
           path: library/build/outputs/aar/library-release.aar
@@ -54,7 +66,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -62,19 +74,50 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
+      - name: Cache libghostty-vt objects
+        uses: actions/cache@v6
+        with:
+          path: build/ghostty/zig-cache
+          key: ghostty-vt-${{ env.ZIG_VERSION }}-${{ hashFiles('GHOSTTY_REF', 'patches/ghostty/*.patch') }}
+          restore-keys: ghostty-vt-${{ env.ZIG_VERSION }}-
       - name: Install NDK
-        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" > /dev/null
-      - uses: gradle/actions/setup-gradle@v4
+        run: |
+          ndk=$(sed -n 's/.*ndkVersion = "\(.*\)".*/\1/p' library/build.gradle.kts)
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$ndk" > /dev/null
+      - uses: gradle/actions/setup-gradle@v5
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
+      - name: Cache AVD
+        id: avd-cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-36-google_apis_ps16k-x86_64
+      - name: Create AVD snapshot
+        if: steps.avd-cache.outputs.cache-hit != 'true'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis_ps16k
+          arch: x86_64
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot-load -camera-back none
+          disable-animations: false
+          script: echo "snapshot written"
       - name: Run instrumented tests
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 34
+          api-level: 36
+          target: google_apis_ps16k
           arch: x86_64
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot-save -camera-back none
+          disable-animations: true
           script: ./gradlew :library:connectedDebugAndroidTest
 
   publish:
@@ -86,7 +129,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Check tag matches VERSION_NAME
         run: |
           version=$(grep '^VERSION_NAME=' gradle.properties | cut -d= -f2)
@@ -101,11 +144,19 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
+      - name: Cache libghostty-vt objects
+        uses: actions/cache@v6
+        with:
+          path: build/ghostty/zig-cache
+          key: ghostty-vt-${{ env.ZIG_VERSION }}-${{ hashFiles('GHOSTTY_REF', 'patches/ghostty/*.patch') }}
+          restore-keys: ghostty-vt-${{ env.ZIG_VERSION }}-
       - name: Install NDK
-        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" > /dev/null
-      - uses: gradle/actions/setup-gradle@v4
+        run: |
+          ndk=$(sed -n 's/.*ndkVersion = "\(.*\)".*/\1/p' library/build.gradle.kts)
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$ndk" > /dev/null
+      - uses: gradle/actions/setup-gradle@v5
       - name: Publish to Maven Central
-        run: ./gradlew publishAndReleaseToMavenCentral --no-configuration-cache
+        run: ./gradlew publishAndReleaseToMavenCentral
         env:
           ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
           ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
