@@ -192,7 +192,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
     private var combiningAccent = 0
     private var secondaryMouseButton = 0
 
-    private val accessibilityManager = context.getSystemService(AccessibilityManager::class.java)
+    private val accessibilityManager = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager
     private var accessibilityTextPending = false
     private val accessibilityTextRunnable = Runnable {
         accessibilityTextPending = false
@@ -289,7 +289,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
                 if (handled) return true
                 requestFocus()
                 if (showImeOnTap) {
-                    context.getSystemService(InputMethodManager::class.java)
+                    (context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager)
                         ?.showSoftInput(this@GhosttyTerminalView, 0)
                 }
                 return true
@@ -941,7 +941,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         if (selectionBounds() == null) {
             clearSelection()
         } else {
-            actionMode?.invalidateContentRect()
+            invalidateActionModeContentRect()
         }
     }
 
@@ -964,7 +964,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
 
     private fun copySelection() {
         val bytes = session?.withTerminal { GhosttyVt.nativeSelectionText(it) } ?: return
-        val clipboard = context.getSystemService(ClipboardManager::class.java) ?: return
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
         clipboard.setPrimaryClip(ClipData.newPlainText(null, String(bytes, Charsets.UTF_8)))
         clearSelection()
     }
@@ -972,7 +972,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
     public fun pasteFromClipboard() {
         val activeSession = session ?: return
         if (!activeSession.terminalAlive) return
-        val clipboard = context.getSystemService(ClipboardManager::class.java) ?: return
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
         val clip = clipboard.primaryClip?.takeIf { it.itemCount > 0 } ?: return
         val text = clip.getItemAt(0).coerceToText(context)?.toString()
         if (text.isNullOrEmpty()) return
@@ -994,43 +994,81 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         val current = actionMode
         if (current != null) {
             current.invalidate()
-            current.invalidateContentRect()
+            invalidateActionModeContentRect()
             return
         }
-        actionMode = startActionMode(
-            object : ActionMode.Callback2() {
-                override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean {
-                    menu.add(Menu.NONE, MENU_COPY, 0, android.R.string.copy)
-                    menu.add(Menu.NONE, MENU_PASTE, 1, android.R.string.paste)
-                    menu.add(Menu.NONE, MENU_SELECT_ALL, 2, android.R.string.selectAll)
-                    return true
-                }
+        actionMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            startActionMode(
+                object : ActionMode.Callback2() {
+                    override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean =
+                        createTerminalActionMenu(menu)
 
-                override fun onPrepareActionMode(mode: ActionMode, menu: Menu): Boolean {
-                    menu.findItem(MENU_COPY)?.isVisible = selectionActive
-                    return true
-                }
+                    override fun onPrepareActionMode(mode: ActionMode, menu: Menu): Boolean =
+                        prepareTerminalActionMenu(menu)
 
-                override fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean {
-                    when (item.itemId) {
-                        MENU_COPY -> copySelection()
-                        MENU_PASTE -> pasteFromClipboard()
-                        MENU_SELECT_ALL -> selectAllContent()
-                        else -> return false
+                    override fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean =
+                        handleTerminalActionItem(item)
+
+                    override fun onDestroyActionMode(mode: ActionMode) {
+                        actionMode = null
                     }
-                    return true
-                }
 
-                override fun onDestroyActionMode(mode: ActionMode) {
-                    actionMode = null
-                }
+                    override fun onGetContentRect(mode: ActionMode, view: View, outRect: Rect) {
+                        outRect.set(selectionContentRect())
+                    }
+                },
+                ActionMode.TYPE_FLOATING,
+            )
+        } else {
+            startActionMode(
+                object : ActionMode.Callback {
+                    override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean =
+                        createTerminalActionMenu(menu)
 
-                override fun onGetContentRect(mode: ActionMode, view: View, outRect: Rect) {
-                    outRect.set(selectionContentRect())
-                }
-            },
-            ActionMode.TYPE_FLOATING,
-        )
+                    override fun onPrepareActionMode(mode: ActionMode, menu: Menu): Boolean =
+                        prepareTerminalActionMenu(menu)
+
+                    override fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean =
+                        handleTerminalActionItem(item)
+
+                    override fun onDestroyActionMode(mode: ActionMode) {
+                        actionMode = null
+                    }
+                },
+            )
+        }
+    }
+
+    private fun createTerminalActionMenu(menu: Menu): Boolean {
+        menu.add(Menu.NONE, MENU_COPY, 0, android.R.string.copy)
+        menu.add(Menu.NONE, MENU_PASTE, 1, android.R.string.paste)
+        menu.add(Menu.NONE, MENU_SELECT_ALL, 2, android.R.string.selectAll)
+        return true
+    }
+
+    private fun prepareTerminalActionMenu(menu: Menu): Boolean {
+        menu.findItem(MENU_COPY)?.isVisible = selectionActive
+        return true
+    }
+
+    private fun handleTerminalActionItem(item: MenuItem): Boolean {
+        when (item.itemId) {
+            MENU_COPY -> copySelection()
+            MENU_PASTE -> pasteFromClipboard()
+            MENU_SELECT_ALL -> selectAllContent()
+            else -> return false
+        }
+        return true
+    }
+
+    private fun invalidateActionModeContentRect() {
+        val mode = actionMode ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) mode.invalidateContentRect()
+    }
+
+    private fun hideActionModeForDrag() {
+        val mode = actionMode ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) mode.hide(ACTION_MODE_DRAG_HIDE_MS)
     }
 
     private fun selectionContentRect(): Rect {
@@ -1104,7 +1142,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
             }
             GhosttyVt.nativeSetSelection(handle, dragAnchorCol, dragAnchorRow, col, row)
         } ?: return
-        actionMode?.hide(ACTION_MODE_DRAG_HIDE_MS)
+        hideActionModeForDrag()
         showMagnifier(x, y)
         scheduleFrame()
     }
@@ -1112,9 +1150,8 @@ public class GhosttyTerminalView @JvmOverloads constructor(
     private fun endHandleDrag() {
         draggingHandle = HANDLE_NONE
         dismissMagnifier()
-        val current = actionMode
-        if (current != null) {
-            current.invalidateContentRect()
+        if (actionMode != null) {
+            invalidateActionModeContentRect()
         } else {
             startTerminalActionMode()
         }
@@ -1413,7 +1450,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
             if (draggingHandle != HANDLE_NONE) {
                 draggingHandle = HANDLE_NONE
                 dismissMagnifier()
-                actionMode?.invalidateContentRect()
+                invalidateActionModeContentRect()
             }
             gestureDetector.onTouchEvent(event)
             return true
@@ -1424,14 +1461,14 @@ public class GhosttyTerminalView @JvmOverloads constructor(
                     draggingHandle = hitTestHandle(event.x, event.y)
                     if (draggingHandle != HANDLE_NONE) {
                         dragPastSlop = true
-                        actionMode?.hide(ACTION_MODE_DRAG_HIDE_MS)
+                        hideActionModeForDrag()
                         return true
                     }
                 }
                 MotionEvent.ACTION_POINTER_DOWN -> if (draggingHandle != HANDLE_NONE) {
                     draggingHandle = HANDLE_NONE
                     dismissMagnifier()
-                    actionMode?.invalidateContentRect()
+                    invalidateActionModeContentRect()
                 }
                 MotionEvent.ACTION_MOVE -> if (draggingHandle != HANDLE_NONE) {
                     if (!dragPastSlop) {
@@ -1645,7 +1682,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
                 }
             },
             copyUrl = {
-                context.getSystemService(ClipboardManager::class.java)
+                (context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager)
                     ?.setPrimaryClip(ClipData.newPlainText(null, url))
             },
         )

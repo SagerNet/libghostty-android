@@ -313,11 +313,13 @@ class GhosttyNativePlugin : Plugin<Project> {
         val ghosttyCacheDir = env.buildDir.map { it.dir("zig-cache") }
         val ghosttyVtDir = project.layout.buildDirectory.dir("ghostty-vt")
 
+        // Zig defaults the Android API level to 29 when the target omits it
+        // (std.Target.Os.VersionRange.default); pin it to match minSdk.
         val ghosttyAbis = listOf(
-            GhosttyAbi("arm64-v8a", "aarch64-linux-android", "ghosttyBuildArm64"),
-            GhosttyAbi("armeabi-v7a", "arm-linux-androideabi", "ghosttyBuildArmv7"),
-            GhosttyAbi("x86_64", "x86_64-linux-android", "ghosttyBuildX64"),
-            GhosttyAbi("x86", "x86-linux-android", "ghosttyBuildX86"),
+            GhosttyAbi("arm64-v8a", "aarch64-linux-android.21", "ghosttyBuildArm64"),
+            GhosttyAbi("armeabi-v7a", "arm-linux-androideabi.21", "ghosttyBuildArmv7"),
+            GhosttyAbi("x86_64", "x86_64-linux-android.21", "ghosttyBuildX64"),
+            GhosttyAbi("x86", "x86-linux-android.21", "ghosttyBuildX86"),
         )
 
         val ghosttyBuildTasks = ghosttyAbis.map { (abi, target, taskName) ->

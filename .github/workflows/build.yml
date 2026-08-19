@@ -44,7 +44,7 @@ jobs:
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$ndk" > /dev/null
       - uses: gradle/actions/setup-gradle@v5
       - name: Build
-        run: ./gradlew :library:assembleRelease :library-extras:assembleRelease :library-compose:assembleRelease
+        run: ./gradlew :library:assembleRelease :library-extras:assembleRelease :library-compose:assembleRelease :library-compose-legacy:assembleRelease
       - name: Check patch assumptions
         run: scripts/check-patch-assumptions.sh build/ghostty/source
       - name: Check 16 KB page alignment
@@ -65,6 +65,7 @@ jobs:
             library/build/outputs/aar/library-release.aar
             library-extras/build/outputs/aar/library-extras-release.aar
             library-compose/build/outputs/aar/library-compose-release.aar
+            library-compose-legacy/build/outputs/aar/library-compose-legacy-release.aar
 
   test:
     runs-on: ubuntu-latest
@@ -167,11 +168,12 @@ jobs:
           ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_KEY_PASSWORD }}
       - name: Create GitHub release
         run: |
-          ./gradlew :library:assembleRelease :library-extras:assembleRelease :library-compose:assembleRelease
+          ./gradlew :library:assembleRelease :library-extras:assembleRelease :library-compose:assembleRelease :library-compose-legacy:assembleRelease
           gh release create "$GITHUB_REF_NAME" \
             library/build/outputs/aar/library-release.aar \
             library-extras/build/outputs/aar/library-extras-release.aar \
             library-compose/build/outputs/aar/library-compose-release.aar \
+            library-compose-legacy/build/outputs/aar/library-compose-legacy-release.aar \
             --title "$GITHUB_REF_NAME" \
             --notes "ghostty commit: $(cat GHOSTTY_REF)"
         env:

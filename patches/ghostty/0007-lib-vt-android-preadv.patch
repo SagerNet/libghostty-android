@@ -1,0 +1,25 @@
+diff --git a/src/lib/TinyIo.zig b/src/lib/TinyIo.zig
+--- a/src/lib/TinyIo.zig
++++ b/src/lib/TinyIo.zig
+@@ -191,9 +191,12 @@ const fstat_sym = if (posix.lfs64_abi) posix.system.fstat64 else posix.system.fs
+ const fstatat_sym = if (posix.lfs64_abi) posix.system.fstatat64 else posix.system.fstatat;
+ const lseek_sym = if (posix.lfs64_abi) posix.system.lseek64 else posix.system.lseek;
+ const preadv_sym = if (posix.lfs64_abi) posix.system.preadv64 else posix.system.preadv;
++const pread_sym = if (posix.lfs64_abi) posix.system.pread64 else posix.system.pread;
+
+ const have_preadv = switch (builtin.os.tag) {
+     .haiku => false,
++    // Bionic gained preadv in API 24.
++    .linux => !builtin.abi.isAndroid() or builtin.os.version_range.linux.android >= 24,
+     else => true,
+ };
+
+@@ -374,7 +377,7 @@ fn fileReadPositional(
+         const rc = if (comptime have_preadv)
+             preadv_sym(file.handle, dest.ptr, @intCast(dest.len), @bitCast(offset))
+         else
+-            posix.system.pread(file.handle, dest[0].base, dest[0].len, @bitCast(offset));
++            pread_sym(file.handle, dest[0].base, dest[0].len, @bitCast(offset));
+         switch (posix.errno(rc)) {
+             .SUCCESS => return @bitCast(rc),
+             .INTR, .TIMEDOUT => continue,

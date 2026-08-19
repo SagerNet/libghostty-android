@@ -180,7 +180,7 @@ public class GhosttyTerminalSession(
         if (flags and GhosttyVt.EVENT_CLIPBOARD != 0) {
             val text = GhosttyVt.nativeTakeClipboard(handle)?.toString(Charsets.UTF_8)
             if (systemClipboardWriteEnabled && !text.isNullOrEmpty()) {
-                context.getSystemService(ClipboardManager::class.java)
+                (context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager)
                     ?.setPrimaryClip(ClipData.newPlainText(null, text))
             }
         }
@@ -255,7 +255,7 @@ public class GhosttyTerminalSession(
         }
     }
 
-    private fun readClipboardText(): String? = context.getSystemService(ClipboardManager::class.java)
+    private fun readClipboardText(): String? = (context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager)
         ?.primaryClip
         ?.takeIf { it.itemCount > 0 }
         ?.getItemAt(0)

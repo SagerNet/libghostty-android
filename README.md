@@ -31,6 +31,15 @@ dependencies {
 }
 ```
 
+libghostty-android-compose requires minSdk 23. For minSdk 21, use
+libghostty-android-compose-legacy, the same module built against Compose 1.7:
+
+```kotlin
+dependencies {
+    implementation("io.github.sagernet:libghostty-android-compose-legacy:0.1.0")
+}
+```
+
 ```kotlin
 val dialogState = rememberTerminalDialogState()
 GhosttyTerminal(session, Modifier.fillMaxSize()) { view ->

@@ -16,3 +16,4 @@ rootProject.name = "libghostty-android"
 include(":library")
 include(":library-extras")
 include(":library-compose")
+include(":library-compose-legacy")
