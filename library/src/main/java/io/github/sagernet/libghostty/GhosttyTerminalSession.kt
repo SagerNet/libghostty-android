@@ -19,7 +19,7 @@ import kotlinx.coroutines.flow.asStateFlow
  * property writes must happen on the main thread. State flows and [EventListener] methods are
  * updated on the main thread, except [exitStatus], which is updated on the thread that calls
  * [finish]. [Transport] methods may be called from any thread that calls [feedOutput], and from
- * the main thread; implementations must be thread safe.
+ * the main thread; implementations must be thread safe and must not block.
  *
  * Lifecycle: [close] is idempotent; after it, every method is a no-op.
  */
@@ -90,17 +90,11 @@ public class GhosttyTerminalSession(
         set(value) {
             field = value
             if (value != null && columns > 0 && rows > 0) {
-                try {
-                    value.sendResize(
-                        columns,
-                        rows,
-                        columns * cellWidthPixels,
-                        rows * cellHeightPixels,
-                    )
-                } catch (e: Exception) {
-                    Log.e(TAG, "transport send resize failed", e)
-                    if (!isFinished) finish(-1)
-                }
+                sentColumns = 0
+                sentRows = 0
+                sentCellWidthPixels = 0
+                sentCellHeightPixels = 0
+                sendTransportResize()
             }
         }
 
@@ -141,6 +135,16 @@ public class GhosttyTerminalSession(
     private var attachedView: GhosttyTerminalView? = null
     private var cellWidthPixels = 0
     private var cellHeightPixels = 0
+
+    private var sentColumns = 0
+    private var sentRows = 0
+    private var sentCellWidthPixels = 0
+    private var sentCellHeightPixels = 0
+    private var resizeSendScheduled = false
+    private val resizeSendRunnable = Runnable {
+        resizeSendScheduled = false
+        sendTransportResize()
+    }
 
     init {
         _backgroundColor.value = withTerminal { GhosttyVt.nativeGetBackgroundColor(it) }
@@ -305,15 +309,55 @@ public class GhosttyTerminalSession(
         ?.toString(Charsets.UTF_8)
 
     public fun resize(columns: Int, rows: Int, cellWidthPixels: Int, cellHeightPixels: Int) {
-        val changed = columns != this.columns || rows != this.rows ||
-            cellWidthPixels != this.cellWidthPixels || cellHeightPixels != this.cellHeightPixels
+        resizeTerminal(columns, rows, cellWidthPixels, cellHeightPixels)
+        scheduleTransportResize()
+    }
+
+    // Resizing to a size the terminal is only going to hold for the length of a
+    // keyboard animation must not reach the transport: a remote shell redrawing
+    // for a size that is already gone leaves its prompt mid-line.
+    internal fun resizeTerminal(columns: Int, rows: Int, cellWidthPixels: Int, cellHeightPixels: Int) {
+        if (columns == this.columns && rows == this.rows &&
+            cellWidthPixels == this.cellWidthPixels && cellHeightPixels == this.cellHeightPixels
+        ) {
+            return
+        }
         this.columns = columns
         this.rows = rows
         this.cellWidthPixels = cellWidthPixels
         this.cellHeightPixels = cellHeightPixels
         withTerminal { GhosttyVt.nativeResize(it, columns, rows, cellWidthPixels, cellHeightPixels) }
-        if (!changed) return
+    }
+
+    private fun scheduleTransportResize() {
+        if (transport == null) return
+        // zsh erases its end-of-line mark by printing COLUMNS-1 spaces and a
+        // carriage return, so a prompt printed before the shell learns the
+        // real width leaves the mark on screen.
+        if (columns != sentColumns) {
+            if (resizeSendScheduled) {
+                resizeSendScheduled = false
+                mainHandler.removeCallbacks(resizeSendRunnable)
+            }
+            sendTransportResize()
+            return
+        }
+        if (resizeSendScheduled) mainHandler.removeCallbacks(resizeSendRunnable)
+        resizeSendScheduled = true
+        mainHandler.postDelayed(resizeSendRunnable, RESIZE_SEND_DEBOUNCE_MS)
+    }
+
+    private fun sendTransportResize() {
         val currentTransport = transport ?: return
+        if (columns == sentColumns && rows == sentRows &&
+            cellWidthPixels == sentCellWidthPixels && cellHeightPixels == sentCellHeightPixels
+        ) {
+            return
+        }
+        sentColumns = columns
+        sentRows = rows
+        sentCellWidthPixels = cellWidthPixels
+        sentCellHeightPixels = cellHeightPixels
         try {
             currentTransport.sendResize(columns, rows, columns * cellWidthPixels, rows * cellHeightPixels)
         } catch (e: Exception) {
@@ -391,5 +435,6 @@ public class GhosttyTerminalSession(
 
     private companion object {
         const val TAG = "GhosttyTerminalSession"
+        const val RESIZE_SEND_DEBOUNCE_MS = 100L
     }
 }

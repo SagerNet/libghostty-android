@@ -35,6 +35,7 @@ import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
 import android.view.ViewConfiguration
+import android.view.WindowInsets
 import android.view.accessibility.AccessibilityManager
 import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.EditorInfo
@@ -72,6 +73,8 @@ public class GhosttyTerminalView @JvmOverloads constructor(
     public var bellHapticEnabled: Boolean = true
 
     public var showImeOnTap: Boolean = true
+
+    private var imeRequestedUntil = 0L
 
     /** Matches plain text as a URL, in addition to the hyperlinks the terminal reported. */
     public var urlDetectionEnabled: Boolean = true
@@ -140,6 +143,9 @@ public class GhosttyTerminalView @JvmOverloads constructor(
     private var rows = 24
     private var bitmap: Bitmap? = null
     private var bitmapCanvas: Canvas? = null
+    private var gridWidthPx = 0
+    private var gridHeightPx = 0
+    private var bitmapGridOffsetY = 0
     private var snapshotBuffer: ByteBuffer? = null
 
     private class KittyImagePlacement(
@@ -229,6 +235,30 @@ public class GhosttyTerminalView @JvmOverloads constructor(
     }
     private val syncRetryRunnable = Runnable { scheduleFrame() }
 
+    private var settledHeight = 0
+    private var settledMaxHeight = 0
+    private var settledMinHeight = 0
+    private var imeInsetPx = 0
+    private var transitionShiftPx = 0f
+    private var transitionStartHeight = 0
+    private var transitionTargetHeight = 0
+    private var transitionStartedAt = 0L
+    private var transitionTimeDriven = false
+    private var resizeSettleScheduled = false
+    private val resizeSettleRunnable = Runnable {
+        resizeSettleScheduled = false
+        if (transitionShiftPx != 0f && !transitionTimeDriven) {
+            transitionShiftPx = gridOffsetY
+            transitionTimeDriven = true
+            transitionStartedAt = SystemClock.uptimeMillis()
+        }
+        if (height > 0) {
+            settledHeight = height
+            if (imeInsetBottom() > 0) settledMinHeight = height else settledMaxHeight = height
+        }
+        updateGridGeometry(force = false)
+    }
+
     private var passwordInput = false
     private var composingText: String? = null
 
@@ -283,13 +313,6 @@ public class GhosttyTerminalView @JvmOverloads constructor(
                         clearSelection()
                         return@withTerminal true
                     }
-                    if (GhosttyVt.nativeViewportState(handle) and GhosttyVt.VIEWPORT_MOUSE_TRACKING != 0) {
-                        val col = (e.x / cellWidth).toInt().coerceIn(0, cols - 1)
-                        val row = (e.y / cellHeight).toInt().coerceIn(0, rows - 1)
-                        sendMouseReport(handle, GhosttyVt.MOUSE_ACTION_PRESS, GhosttyVt.MOUSE_BUTTON_LEFT, col, row)
-                        sendMouseReport(handle, GhosttyVt.MOUSE_ACTION_RELEASE, GhosttyVt.MOUSE_BUTTON_LEFT, col, row)
-                        return@withTerminal true
-                    }
                     false
                 } ?: false
                 if (handled) return true
@@ -298,6 +321,14 @@ public class GhosttyTerminalView @JvmOverloads constructor(
                     (context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
                         .showSoftInput(this@GhosttyTerminalView, 0)
                 }
+                session?.withTerminal { handle ->
+                    if (GhosttyVt.nativeViewportState(handle) and GhosttyVt.VIEWPORT_MOUSE_TRACKING != 0) {
+                        val col = (e.x / cellWidth).toInt().coerceIn(0, cols - 1)
+                        val row = rowAt(e.y)
+                        sendMouseReport(handle, GhosttyVt.MOUSE_ACTION_PRESS, GhosttyVt.MOUSE_BUTTON_LEFT, col, row)
+                        sendMouseReport(handle, GhosttyVt.MOUSE_ACTION_RELEASE, GhosttyVt.MOUSE_BUTTON_LEFT, col, row)
+                    }
+                }
                 return true
             }
 
@@ -305,7 +336,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
                 if (scaleDetector.isInProgress) return
                 session?.withTerminal { handle ->
                     lastPressCol = (e.x / cellWidth).toInt().coerceIn(0, cols - 1)
-                    lastPressRow = (e.y / cellHeight).toInt().coerceIn(0, rows - 1)
+                    lastPressRow = rowAt(e.y)
                     performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
                     val link = GhosttyVt.nativeHyperlinkAt(handle, lastPressCol, lastPressRow)
                         ?.toString(Charsets.UTF_8)
@@ -342,7 +373,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
                         GhosttyVt.nativeViewportState(handle) and GhosttyVt.VIEWPORT_MOUSE_TRACKING != 0
                     ) {
                         val col = (e2.x / cellWidth).toInt().coerceIn(0, cols - 1)
-                        val row = (e2.y / cellHeight).toInt().coerceIn(0, rows - 1)
+                        val row = rowAt(e2.y)
                         sendMouseReport(handle, GhosttyVt.MOUSE_ACTION_MOTION, GhosttyVt.MOUSE_BUTTON_LEFT, col, row)
                         return@withTerminal true
                     }
@@ -568,33 +599,122 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         val density = resources.displayMetrics.density
         jumpChipCenterX = w - JUMP_CHIP_CENTER_OFFSET_DP * density
         jumpChipCenterY = h - JUMP_CHIP_CENTER_OFFSET_DP * density
-        updateGridGeometry(force = false)
+        if (h <= 0) return
+        if (bitmap == null || w != oldw) {
+            if (resizeSettleScheduled) {
+                resizeSettleScheduled = false
+                removeCallbacks(resizeSettleRunnable)
+            }
+            settledHeight = h
+            if (imeInsetBottom() > 0) {
+                settledMinHeight = h
+                settledMaxHeight = 0
+            } else {
+                settledMaxHeight = h
+                settledMinHeight = 0
+            }
+            updateGridGeometry(force = false)
+            transitionShiftPx = 0f
+            return
+        }
+        if (resizeSettleScheduled) removeCallbacks(resizeSettleRunnable)
+        resizeSettleScheduled = true
+        postDelayed(resizeSettleRunnable, RESIZE_SETTLE_MS)
+        val target = predictedHeight(h)
+        if (cellSize.rowsFor(target) != rows) updateGridGeometry(force = false, gridHeight = target)
     }
 
-    private fun updateGridGeometry(force: Boolean) {
+    private fun updateGridGeometry(force: Boolean, gridHeight: Int = height) {
         val activeSession = session ?: return
-        if (width <= 0 || height <= 0 || !activeSession.terminalAlive) return
+        if (width <= 0 || gridHeight <= 0 || !activeSession.terminalAlive) return
         val size = cellSize
         val newCols = size.columnsFor(width)
-        val newRows = size.rowsFor(height)
+        val newRows = size.rowsFor(gridHeight)
         val changed = newCols != cols || newRows != rows
         cols = newCols
         rows = newRows
+        val settled = gridHeight == height
         if (changed || force || bitmap == null) {
-            activeSession.resize(cols, rows, cellWidth.roundToInt(), cellHeight)
+            val viewportBefore = viewportOffset()
+            if (settled) {
+                activeSession.resize(cols, rows, cellWidth.roundToInt(), cellHeight)
+            } else {
+                activeSession.resizeTerminal(cols, rows, cellWidth.roundToInt(), cellHeight)
+            }
+            transitionShiftPx = (viewportOffset() - viewportBefore).toFloat() * cellHeight
+            transitionTimeDriven = gridHeight == height
+            transitionStartHeight = settledHeight
+            transitionTargetHeight = gridHeight
+            transitionStartedAt = SystemClock.uptimeMillis()
+            bitmapGridOffsetY = max(0f, transitionShiftPx).toInt()
             allocateGridBuffers()
+            // Choreographer runs postFrameCallback callbacks in its ANIMATION
+            // phase, before layout; a callback posted from layout fires only in
+            // the next frame, after this frame's onDraw has already drawn the
+            // reallocated buffer.
+            renderFrame()
+        } else {
+            if (settled) activeSession.resize(cols, rows, cellWidth.roundToInt(), cellHeight)
+            scheduleFrame()
         }
-        scheduleFrame()
     }
 
+    private fun imeInsetBottom(): Int {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return 0
+        return rootWindowInsets?.getInsets(WindowInsets.Type.ime())?.bottom ?: 0
+    }
+
+    private fun predictedHeight(h: Int): Int {
+        val ime = imeInsetBottom()
+        if (ime > 0) imeInsetPx = ime
+        if (h > settledHeight) {
+            if (settledMaxHeight > h) return settledMaxHeight
+            val grown = settledHeight + imeInsetPx
+            return if (grown > h) grown else h
+        }
+        if (h < settledHeight) {
+            if (settledMinHeight in 1..<h) return settledMinHeight
+            val shrunk = settledHeight - ime
+            return if (shrunk in 1..<h) shrunk else h
+        }
+        return h
+    }
+
+    private fun viewportOffset(): Long =
+        session?.withTerminal { GhosttyVt.nativeScrollbar(it)?.get(1) } ?: 0L
+
+    private val gridOffsetY: Float
+        get() {
+            if (transitionShiftPx == 0f) return 0f
+            if (!transitionTimeDriven) {
+                val span = transitionTargetHeight - transitionStartHeight
+                if (span == 0) return 0f
+                val progress = ((height - transitionStartHeight).toFloat() / span).coerceIn(0f, 1f)
+                return transitionShiftPx * (1f - progress)
+            }
+            val duration = IME_TRANSITION_MS * animatorDurationScale
+            if (duration <= 0f) return 0f
+            val remaining = 1f - ((SystemClock.uptimeMillis() - transitionStartedAt) / duration).coerceIn(0f, 1f)
+            return transitionShiftPx * remaining * remaining
+        }
+
+    private fun rowAt(y: Float): Int = ((y - gridOffsetY) / cellHeight).toInt().coerceIn(0, rows - 1)
+
     private fun allocateGridBuffers() {
-        val widthPx = max(1, ceil(cols * cellWidth).toInt())
-        val heightPx = max(1, rows * cellHeight)
+        gridWidthPx = max(1, ceil(cols * cellWidth).toInt())
+        gridHeightPx = max(1, rows * cellHeight)
         val currentBitmap = bitmap
-        if (currentBitmap == null || currentBitmap.width != widthPx || currentBitmap.height != heightPx) {
+        if (currentBitmap == null || currentBitmap.height < gridHeightPx + bitmapGridOffsetY) {
+            bitmapGridOffsetY = 0
+        }
+        if (currentBitmap == null || currentBitmap.width < gridWidthPx || currentBitmap.height < gridHeightPx) {
+            val widthPx = max(gridWidthPx, currentBitmap?.width ?: 0)
+            val heightPx = max(gridHeightPx, currentBitmap?.height ?: 0)
             bitmap = Bitmap.createBitmap(widthPx, heightPx, Bitmap.Config.ARGB_8888).also {
-                bitmapCanvas = Canvas(it)
-                bitmapCanvas?.drawColor(defaultBackground)
+                bitmapCanvas = Canvas(it).apply {
+                    drawColor(defaultBackground)
+                    if (currentBitmap != null) drawBitmap(currentBitmap, 0f, 0f, null)
+                }
             }
         }
         val capacity = HEADER_BYTES +
@@ -664,8 +784,12 @@ public class GhosttyTerminalView @JvmOverloads constructor(
             passwordInput = buffer.int != 0
             syncBlinkTimer()
 
+            val save = canvas.save()
+            canvas.translate(0f, bitmapGridOffsetY.toFloat())
+            canvas.clipRect(0, 0, gridWidthPx, gridHeightPx)
             if (dirtyKind == DIRTY_FULL) canvas.drawColor(defaultBackground)
             repeat(rowCount) { drawRowRecord(buffer, canvas, snapshotCols) }
+            canvas.restoreToCount(save)
             updateKittyPlacements(handle)
             if (selectionActive) {
                 if (selectionBounds() == null) clearSelection() else invalidateActionModeContentRect()
@@ -1076,20 +1200,20 @@ public class GhosttyTerminalView @JvmOverloads constructor(
             val singleRow = bounds.top == bounds.bottom
             Rect(
                 if (singleRow) (bounds.topCol * cellWidth).toInt() else 0,
-                bounds.top * cellHeight,
+                (bounds.top * cellHeight + gridOffsetY).toInt(),
                 if (singleRow) {
                     ((bounds.bottomCol + 1 + selectionEndExtraCols(bounds.bottom)) * cellWidth).toInt()
                 } else {
                     width
                 },
-                (bounds.bottom + 1) * cellHeight,
+                ((bounds.bottom + 1) * cellHeight + gridOffsetY).toInt(),
             )
         } else {
             Rect(
                 (lastPressCol * cellWidth).toInt(),
-                lastPressRow * cellHeight,
+                (lastPressRow * cellHeight + gridOffsetY).toInt(),
                 ((lastPressCol + 1) * cellWidth).toInt(),
-                (lastPressRow + 1) * cellHeight,
+                ((lastPressRow + 1) * cellHeight + gridOffsetY).toInt(),
             )
         }
     }
@@ -1099,9 +1223,9 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         val slop = HANDLE_HIT_SLOP_DP * resources.displayMetrics.density
         val handleHalfHeight = (handleDrawableEnd?.intrinsicHeight ?: 0) / 2f
         val startX = bounds.topCol * cellWidth
-        val startY = (bounds.top + 1) * cellHeight + handleHalfHeight
+        val startY = (bounds.top + 1) * cellHeight + gridOffsetY + handleHalfHeight
         val endX = (bounds.bottomCol + 1 + selectionEndExtraCols(bounds.bottom)) * cellWidth
-        val endY = (bounds.bottom + 1) * cellHeight + handleHalfHeight
+        val endY = (bounds.bottom + 1) * cellHeight + gridOffsetY + handleHalfHeight
         val distanceToStart = hypot(x - startX, y - startY)
         val distanceToEnd = hypot(x - endX, y - endY)
         return when {
@@ -1124,7 +1248,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
     private fun dragSelection(x: Float, y: Float) {
         session?.withTerminal { handle ->
             val col = (x / cellWidth).toInt().coerceIn(0, cols - 1)
-            val row = ((y / cellHeight).toInt() - dragBiasRows).coerceIn(0, rows - 1)
+            val row = (((y - gridOffsetY) / cellHeight).toInt() - dragBiasRows).coerceIn(0, rows - 1)
             val edgeDelta = when {
                 row == 0 -> -1
                 row == rows - 1 -> 1
@@ -1153,7 +1277,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         val endDrawable = handleDrawableEnd
         if (startDrawable == null || endDrawable == null) return
         val startX = bounds.topCol * cellWidth
-        val startTop = (bounds.top + 1) * cellHeight
+        val startTop = ((bounds.top + 1) * cellHeight + gridOffsetY).toInt()
         // Platform handle hotspots: 3/4 of the width for the left handle,
         // 1/4 for the right (frameworks/base Editor.HandleView).
         val startLeft = (startX - startDrawable.intrinsicWidth * 3 / 4f).toInt()
@@ -1165,7 +1289,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         )
         startDrawable.draw(canvas)
         val endX = (bounds.bottomCol + 1 + selectionEndExtraCols(bounds.bottom)) * cellWidth
-        val endTop = (bounds.bottom + 1) * cellHeight
+        val endTop = ((bounds.bottom + 1) * cellHeight + gridOffsetY).toInt()
         val endLeft = (endX - endDrawable.intrinsicWidth / 4f).toInt()
         endDrawable.setBounds(
             endLeft,
@@ -1216,6 +1340,38 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         readAnimatorDurationScale()
         syncBlinkTimer()
         session?.sendFocus(hasWindowFocus)
+        applyImeRequest()
+    }
+
+    override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: Rect?) {
+        super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
+        if (gainFocus) applyImeRequest()
+    }
+
+    override fun onApplyWindowInsets(insets: WindowInsets): WindowInsets {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            if (insets.isVisible(WindowInsets.Type.ime())) imeRequestedUntil = 0L else applyImeRequest()
+        }
+        return super.onApplyWindowInsets(insets)
+    }
+
+    // Focus moving off a screen that is being popped dispatches a hide, which
+    // cancels a show issued in the same frame.
+    public fun showIme() {
+        imeRequestedUntil = SystemClock.uptimeMillis() + IME_REQUEST_TIMEOUT_MS
+        requestFocus()
+        applyImeRequest()
+    }
+
+    private fun applyImeRequest() {
+        if (SystemClock.uptimeMillis() > imeRequestedUntil) return
+        if (!isAttachedToWindow || !isFocused || !hasWindowFocus()) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            windowInsetsController?.show(WindowInsets.Type.ime())
+        } else {
+            (context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
+                .showSoftInput(this, 0)
+        }
     }
 
     override fun onAttachedToWindow() {
@@ -1231,6 +1387,11 @@ public class GhosttyTerminalView @JvmOverloads constructor(
             Choreographer.getInstance().removeFrameCallback(frameCallback)
             framePending = false
         }
+        if (resizeSettleScheduled) {
+            resizeSettleScheduled = false
+            removeCallbacks(resizeSettleRunnable)
+            updateGridGeometry(force = false)
+        }
         scroller.abortAnimation()
         removeCallbacks(flingRunnable)
         removeCallbacks(syncRetryRunnable)
@@ -1244,13 +1405,28 @@ public class GhosttyTerminalView @JvmOverloads constructor(
 
     override fun onDraw(canvas: Canvas) {
         canvas.drawColor(defaultBackground)
+        val bitmapSave = canvas.save()
+        canvas.translate(0f, gridOffsetY - bitmapGridOffsetY)
+        canvas.clipRect(0, 0, gridWidthPx, gridHeightPx + bitmapGridOffsetY)
         bitmap?.let { canvas.drawBitmap(it, 0f, 0f, null) }
+        canvas.restoreToCount(bitmapSave)
+        val save = canvas.save()
+        canvas.translate(0f, gridOffsetY)
+        canvas.clipRect(0, 0, gridWidthPx, gridHeightPx)
         drawKittyImages(canvas, belowText = true)
         overdrawGlyphsForBelowTextImages(canvas)
         drawKittyImages(canvas, belowText = false)
         drawCursor(canvas)
         drawComposingText(canvas)
         drawPasswordIndicator(canvas)
+        canvas.restoreToCount(save)
+        if (transitionShiftPx != 0f) {
+            if (abs(gridOffsetY) < 1f) {
+                transitionShiftPx = 0f
+            } else if (transitionTimeDriven) {
+                postInvalidateOnAnimation()
+            }
+        }
         drawSelectionHandles(canvas)
         drawScrollIndicator(canvas)
         drawJumpToBottomChip(canvas)
@@ -1415,7 +1591,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
             if (vertical != 0f) {
                 val handled = session?.withTerminal { handle ->
                     val col = (event.x / cellWidth).toInt().coerceIn(0, cols - 1)
-                    val row = (event.y / cellHeight).toInt().coerceIn(0, rows - 1)
+                    val row = rowAt(event.y)
                     scrollContent(handle, if (vertical > 0f) -WHEEL_SCROLL_ROWS else WHEEL_SCROLL_ROWS, col, row)
                     true
                 } ?: false
@@ -1430,7 +1606,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
             scroller.abortAnimation()
             gestureDownCol = (event.x / cellWidth).toInt().coerceIn(0, cols - 1)
-            gestureDownRow = (event.y / cellHeight).toInt().coerceIn(0, rows - 1)
+            gestureDownRow = rowAt(event.y)
         }
         scaleDetector.onTouchEvent(event)
         if (scaleDetector.isInProgress) {
@@ -1486,7 +1662,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
                     else -> return false
                 }
                 val col = (event.x / cellWidth).toInt().coerceIn(0, cols - 1)
-                val row = (event.y / cellHeight).toInt().coerceIn(0, rows - 1)
+                val row = rowAt(event.y)
                 val tracked = session?.withTerminal { handle ->
                     if (GhosttyVt.nativeViewportState(handle) and GhosttyVt.VIEWPORT_MOUSE_TRACKING == 0) {
                         return@withTerminal false
@@ -1511,7 +1687,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
                 if (secondaryMouseButton == 0) return false
                 session?.withTerminal { handle ->
                     val col = (event.x / cellWidth).toInt().coerceIn(0, cols - 1)
-                    val row = (event.y / cellHeight).toInt().coerceIn(0, rows - 1)
+                    val row = rowAt(event.y)
                     sendMouseReport(handle, GhosttyVt.MOUSE_ACTION_MOTION, secondaryMouseButton, col, row)
                 }
                 return true
@@ -1522,7 +1698,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
                 secondaryMouseButton = 0
                 session?.withTerminal { handle ->
                     val col = (event.x / cellWidth).toInt().coerceIn(0, cols - 1)
-                    val row = (event.y / cellHeight).toInt().coerceIn(0, rows - 1)
+                    val row = rowAt(event.y)
                     sendMouseReport(handle, GhosttyVt.MOUSE_ACTION_RELEASE, releasedButton, col, row)
                 }
                 return true
@@ -1794,6 +1970,9 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         private const val MENU_SELECT_ALL = 3
 
         private const val SYNC_OUTPUT_RETRY_MS = 32L
+        private const val IME_REQUEST_TIMEOUT_MS = 1000L
+        private const val IME_TRANSITION_MS = 250f
+        private const val RESIZE_SETTLE_MS = 48L
 
         private const val SCROLLBAR_FADE_START_MS = 800L
         private const val SCROLLBAR_FADE_END_MS = 1400L

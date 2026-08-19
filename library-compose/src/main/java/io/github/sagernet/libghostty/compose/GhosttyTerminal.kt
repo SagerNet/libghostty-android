@@ -1,8 +1,6 @@
 package io.github.sagernet.libghostty.compose
 
-import android.content.Context
 import android.graphics.Typeface
-import android.view.inputmethod.InputMethodManager
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -47,13 +45,7 @@ public fun GhosttyTerminal(
                         currentOnFinishedSessionKey.value()
                     }
                 }
-                if (focusOnAttach) {
-                    view.post {
-                        view.requestFocus()
-                        val imm = view.context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-                        imm.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT)
-                    }
-                }
+                if (focusOnAttach) view.post { view.showIme() }
             }
         },
         modifier = modifier,
