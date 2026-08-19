@@ -18,6 +18,7 @@ import android.os.Build
 import android.os.SystemClock
 import android.text.InputType
 import android.util.AttributeSet
+import android.util.DisplayMetrics
 import android.util.Log
 import android.util.LruCache
 import android.util.TypedValue
@@ -64,9 +65,9 @@ public class GhosttyTerminalView @JvmOverloads constructor(
 
     public var listener: Listener? = null
 
-    public var extraKeysState: TerminalExtraKeysState? = null
+    public var extraKeysState: GhosttyExtraKeysState? = null
 
-    public var uiHandler: TerminalUiHandler = object : TerminalUiHandler {}
+    public var uiHandler: GhosttyUiHandler = object : GhosttyUiHandler {}
 
     public var bellHapticEnabled: Boolean = true
 
@@ -74,6 +75,8 @@ public class GhosttyTerminalView @JvmOverloads constructor(
 
     /** Matches plain text as a URL, in addition to the hyperlinks the terminal reported. */
     public var urlDetectionEnabled: Boolean = true
+
+    public var urlPattern: Regex = Regex("""https?://\S+""")
 
     public var session: GhosttyTerminalSession? = null
         set(value) {
@@ -103,15 +106,24 @@ public class GhosttyTerminalView @JvmOverloads constructor(
             updateGridGeometry(force = true)
         }
 
+    public var fontSizeRangeSp: ClosedFloatingPointRange<Float> = 8f..48f
+        set(value) {
+            field = value
+            fontSizeSp = fontSizeSp
+        }
+
     public var fontSizeSp: Float = DEFAULT_FONT_SIZE_SP
         set(value) {
-            val clamped = value.coerceIn(MIN_FONT_SIZE_SP, MAX_FONT_SIZE_SP)
+            val clamped = value.coerceIn(fontSizeRangeSp.start, fontSizeRangeSp.endInclusive)
             if (clamped == field) return
             field = clamped
             rebuildPaints()
             if (selectionActive || actionMode != null) clearSelection()
             updateGridGeometry(force = true)
         }
+
+    public val cellSize: GhosttyCellSize
+        get() = GhosttyCellSize(cellWidth, cellHeight)
 
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val boldPaint = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -430,8 +442,9 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         for (paint in arrayOf(textPaint, boldPaint, italicPaint, boldItalicPaint)) {
             paint.textSize = sizePx
         }
-        cellWidth = textPaint.measureText("M")
-        cellHeight = ceil(textPaint.fontMetrics.descent - textPaint.fontMetrics.ascent).toInt()
+        val size = measureCellSize(textPaint)
+        cellWidth = size.widthPx
+        cellHeight = size.heightPx
         baseline = -textPaint.fontMetrics.ascent
     }
 
@@ -456,7 +469,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         if (state and GhosttyVt.VIEWPORT_ALTERNATE_SCREEN != 0) {
             val keyCode = if (deltaRows > 0) KeyEvent.KEYCODE_DPAD_DOWN else KeyEvent.KEYCODE_DPAD_UP
             repeat(abs(deltaRows)) {
-                val bytes = GhosttyVt.nativeEncodeKey(handle, keyCode, 1, 0, 0, false, null)
+                val bytes = encodeKeyTap(handle, keyCode, 0, 0, null)
                 if (bytes != null && bytes.isNotEmpty()) session?.sendRawInput(bytes)
             }
             return
@@ -492,13 +505,11 @@ public class GhosttyTerminalView @JvmOverloads constructor(
             // ghostty's ctrlSeq (src/input/key_encode.zig) maps a one-byte
             // utf8 argument to its C0 byte when the logical key has none.
             val bytes = session?.withTerminal { handle ->
-                GhosttyVt.nativeEncodeKey(
+                encodeKeyTap(
                     handle,
                     charToKeyCode(char),
-                    1,
                     meta,
                     char.lowercaseChar().code,
-                    false,
                     char.toString().toByteArray(Charsets.UTF_8),
                 )
             }
@@ -514,11 +525,25 @@ public class GhosttyTerminalView @JvmOverloads constructor(
     public fun sendKey(keyCode: Int) {
         val meta = extraKeysState?.currentMetaState() ?: 0
         val bytes = session?.withTerminal { handle ->
-            GhosttyVt.nativeEncodeKey(handle, keyCode, 1, meta, 0, false, null)
+            encodeKeyTap(handle, keyCode, meta, 0, null)
         } ?: return
-        if (bytes.isEmpty()) return
+        if (bytes == null || bytes.isEmpty()) return
         if (meta != 0) extraKeysState?.consumeModifiers()
         sendToSession(bytes, GhosttyTerminalSession::sendRawInput)
+    }
+
+    private fun encodeKeyTap(
+        handle: Long,
+        keyCode: Int,
+        metaState: Int,
+        unshiftedCodepoint: Int,
+        utf8: ByteArray?,
+    ): ByteArray? {
+        val press = GhosttyVt.nativeEncodeKey(handle, keyCode, 1, metaState, unshiftedCodepoint, false, utf8)
+        if (press == null || press.isEmpty()) return press
+        val release = GhosttyVt.nativeEncodeKey(handle, keyCode, 0, metaState, unshiftedCodepoint, false, utf8)
+        if (release == null || release.isEmpty()) return press
+        return press + release
     }
 
     private fun charToKeyCode(char: Char): Int {
@@ -1647,7 +1672,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
             }
         }
         val pressIndex = columnStart[col.coerceIn(0, cols - 1)]
-        for (match in urlRegex.findAll(builder)) {
+        for (match in urlPattern.findAll(builder)) {
             if (pressIndex >= match.range.first && pressIndex <= match.range.last) {
                 return match.value.trimEnd('.', ',', ';', ':', ')', ']', '>', '"', '\'')
             }
@@ -1722,8 +1747,26 @@ public class GhosttyTerminalView @JvmOverloads constructor(
 
     public companion object {
         public const val DEFAULT_FONT_SIZE_SP: Float = 14f
-        public const val MIN_FONT_SIZE_SP: Float = 8f
-        public const val MAX_FONT_SIZE_SP: Float = 48f
+
+        public fun measureCellSize(
+            typeface: Typeface,
+            fontSizeSp: Float,
+            displayMetrics: DisplayMetrics,
+        ): GhosttyCellSize {
+            val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+            paint.typeface = typeface
+            paint.textSize = TypedValue.applyDimension(
+                TypedValue.COMPLEX_UNIT_SP,
+                fontSizeSp,
+                displayMetrics,
+            )
+            return measureCellSize(paint)
+        }
+
+        private fun measureCellSize(paint: Paint): GhosttyCellSize = GhosttyCellSize(
+            paint.measureText("M"),
+            ceil(paint.fontMetrics.descent - paint.fontMetrics.ascent).toInt(),
+        )
 
         private const val TAG = "GhosttyTerminalView"
         private const val PINCH_SCALE_STEP = 0.1f
@@ -1773,8 +1816,6 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         private const val MENU_COPY = 1
         private const val MENU_PASTE = 2
         private const val MENU_SELECT_ALL = 3
-
-        private val urlRegex = Regex("""https?://\S+""")
 
         private const val SYNC_OUTPUT_RETRY_MS = 32L
 

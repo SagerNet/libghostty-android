@@ -10,11 +10,15 @@ import android.util.Base64
 import android.util.Log
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * Threading: [feedOutput] and [finish] may be called from any thread. All other methods and
- * property writes must happen on the main thread. [Listener] methods are called on the main
- * thread. [Transport] methods may be called from any thread that calls [feedOutput], and from
+ * property writes must happen on the main thread. State flows and [EventListener] methods are
+ * updated on the main thread, except [exitStatus], which is updated on the thread that calls
+ * [finish]. [Transport] methods may be called from any thread that calls [feedOutput], and from
  * the main thread; implementations must be thread safe.
  *
  * Lifecycle: [close] is idempotent; after it, every method is a no-op.
@@ -29,6 +33,9 @@ public class GhosttyTerminalSession(
         public val rows: Int = 24,
         public val maxScrollbackLines: Long = 10_000,
         public val reportedVersion: String = "libghostty-android",
+        public val terminfoName: String? = "xterm-256color",
+        public val defaultCursorStyle: GhosttyCursorStyle = GhosttyCursorStyle.BLOCK,
+        public val defaultCursorBlink: Boolean = true,
     ) {
         init {
             require(columns >= 1) { "columns must be >= 1" }
@@ -37,18 +44,10 @@ public class GhosttyTerminalSession(
         }
     }
 
-    public interface Listener {
-        public fun onTitleChanged(session: GhosttyTerminalSession) {}
-
+    public interface EventListener {
         public fun onBell(session: GhosttyTerminalSession) {}
 
-        public fun onWorkingDirectoryChanged(session: GhosttyTerminalSession) {}
-
         public fun onNotification(session: GhosttyTerminalSession, title: String, body: String) {}
-
-        public fun onProgressChanged(session: GhosttyTerminalSession) {}
-
-        public fun onFinished(session: GhosttyTerminalSession) {}
     }
 
     public interface Transport {
@@ -70,6 +69,9 @@ public class GhosttyTerminalSession(
         options.rows,
         options.maxScrollbackLines,
         options.reportedVersion,
+        options.terminfoName,
+        options.defaultCursorStyle.nativeValue,
+        options.defaultCursorBlink,
     )
         private set
 
@@ -80,7 +82,7 @@ public class GhosttyTerminalSession(
     internal val terminalAlive: Boolean
         get() = synchronized(terminalAccess) { handle != 0L }
 
-    public var listener: Listener? = null
+    public var eventListener: EventListener? = null
 
     public var systemClipboardWriteEnabled: Boolean = true
 
@@ -102,26 +104,23 @@ public class GhosttyTerminalSession(
             }
         }
 
-    @Volatile
-    public var isFinished: Boolean = false
-        private set
+    private val _title = MutableStateFlow<String?>(null)
+    public val title: StateFlow<String?> = _title.asStateFlow()
 
-    public var title: String? = null
-        private set
+    private val _workingDirectory = MutableStateFlow<String?>(null)
+    public val workingDirectory: StateFlow<String?> = _workingDirectory.asStateFlow()
 
-    public var workingDirectory: String? = null
-        private set
+    private val _progress = MutableStateFlow<GhosttyProgress?>(null)
+    public val progress: StateFlow<GhosttyProgress?> = _progress.asStateFlow()
 
-    /** 0 remove, 1 set, 2 error, 3 indeterminate, 4 pause. */
-    public var progressState: Int = GhosttyVt.PROGRESS_STATE_REMOVE
-        private set
+    private val _backgroundColor = MutableStateFlow<Int?>(null)
+    public val backgroundColor: StateFlow<Int?> = _backgroundColor.asStateFlow()
 
-    /** 0..100, or -1 when the report omitted it. */
-    public var progressPercent: Int = -1
-        private set
+    private val _exitStatus = MutableStateFlow<Int?>(null)
+    public val exitStatus: StateFlow<Int?> = _exitStatus.asStateFlow()
 
-    public var exitCode: Int = 0
-        private set
+    public val isFinished: Boolean
+        get() = _exitStatus.value != null
 
     public var selectionBackground: Int? = null
         private set
@@ -135,10 +134,18 @@ public class GhosttyTerminalSession(
     public var rows: Int = 0
         private set
 
+    public val hasAttachedView: Boolean
+        get() = attachedView != null
+
     private var clipboardReadApproved = false
     private var attachedView: GhosttyTerminalView? = null
     private var cellWidthPixels = 0
     private var cellHeightPixels = 0
+
+    init {
+        _backgroundColor.value = withTerminal { GhosttyVt.nativeGetBackgroundColor(it) }
+            ?.takeIf { it != 0 }
+    }
 
     internal fun attach(view: GhosttyTerminalView) {
         check(attachedView == null || attachedView === view) {
@@ -170,12 +177,11 @@ public class GhosttyTerminalSession(
         val flags = GhosttyVt.nativeTakeEventFlags(handle)
         if (flags == 0) return
         if (flags and GhosttyVt.EVENT_TITLE != 0) {
-            title = GhosttyVt.nativeGetTitle(handle)?.toString(Charsets.UTF_8)
-            listener?.onTitleChanged(this)
+            _title.value = GhosttyVt.nativeGetTitle(handle)?.toString(Charsets.UTF_8)
         }
         if (flags and GhosttyVt.EVENT_BELL != 0) {
             attachedView?.onSessionBell()
-            listener?.onBell(this)
+            eventListener?.onBell(this)
         }
         if (flags and GhosttyVt.EVENT_CLIPBOARD != 0) {
             val text = GhosttyVt.nativeTakeClipboard(handle)?.toString(Charsets.UTF_8)
@@ -185,16 +191,15 @@ public class GhosttyTerminalSession(
             }
         }
         if (flags and GhosttyVt.EVENT_PWD != 0) {
-            workingDirectory = GhosttyVt.nativeGetPwd(handle)
+            _workingDirectory.value = GhosttyVt.nativeGetPwd(handle)
                 ?.toString(Charsets.UTF_8)
                 ?.let(::pwdToPath)
-            listener?.onWorkingDirectoryChanged(this)
         }
         if (flags and GhosttyVt.EVENT_NOTIFICATION != 0) {
             while (true) {
                 val packed = GhosttyVt.nativeTakeNotification(handle) ?: break
                 val titleLength = ByteBuffer.wrap(packed).order(ByteOrder.LITTLE_ENDIAN).int
-                listener?.onNotification(
+                eventListener?.onNotification(
                     this,
                     String(packed, 4, titleLength, Charsets.UTF_8),
                     String(packed, 4 + titleLength, packed.size - 4 - titleLength, Charsets.UTF_8),
@@ -208,10 +213,17 @@ public class GhosttyTerminalSession(
         if (flags and GhosttyVt.EVENT_PROGRESS != 0) {
             val progress = GhosttyVt.nativeGetProgress(handle)
             if (progress != null) {
-                progressState = progress[0]
-                progressPercent = progress[1]
-                listener?.onProgressChanged(this)
+                _progress.value = when (progress[0]) {
+                    GhosttyVt.PROGRESS_STATE_SET -> GhosttyProgressState.SET
+                    GhosttyVt.PROGRESS_STATE_ERROR -> GhosttyProgressState.ERROR
+                    GhosttyVt.PROGRESS_STATE_INDETERMINATE -> GhosttyProgressState.INDETERMINATE
+                    GhosttyVt.PROGRESS_STATE_PAUSE -> GhosttyProgressState.PAUSE
+                    else -> null
+                }?.let { GhosttyProgress(it, progress[1].takeIf { percent -> percent >= 0 }) }
             }
+        }
+        if (flags and GhosttyVt.EVENT_COLORS != 0) {
+            _backgroundColor.value = GhosttyVt.nativeGetBackgroundColor(handle).takeIf { it != 0 }
         }
     }
 
@@ -289,6 +301,9 @@ public class GhosttyTerminalSession(
     public fun selectionText(): String? = withTerminal { GhosttyVt.nativeSelectionText(it) }
         ?.toString(Charsets.UTF_8)
 
+    public fun transcriptText(): String? = withTerminal { GhosttyVt.nativeTranscriptText(it) }
+        ?.toString(Charsets.UTF_8)
+
     public fun resize(columns: Int, rows: Int, cellWidthPixels: Int, cellHeightPixels: Int) {
         val changed = columns != this.columns || rows != this.rows ||
             cellWidthPixels != this.cellWidthPixels || cellHeightPixels != this.cellHeightPixels
@@ -320,16 +335,13 @@ public class GhosttyTerminalSession(
                     theme.palette[index]?.toUInt()?.toLong() ?: -1L
                 },
             )
+            _backgroundColor.value = GhosttyVt.nativeGetBackgroundColor(it).takeIf { color -> color != 0 }
         }
         attachedView?.scheduleFrame()
     }
 
     public fun finish(exitCode: Int = 0) {
-        this.exitCode = exitCode
-        isFinished = true
-        mainHandler.post {
-            listener?.onFinished(this)
-        }
+        _exitStatus.value = exitCode
     }
 
     public fun close() {

@@ -10,7 +10,6 @@ android {
     sourceSets {
         getByName("main") {
             java.directories.add("../library-compose/src/main/java")
-            res.directories.add("../library-compose/src/main/res")
         }
     }
 

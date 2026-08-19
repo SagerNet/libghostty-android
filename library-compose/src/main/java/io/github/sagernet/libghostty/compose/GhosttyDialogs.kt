@@ -17,10 +17,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
-import io.github.sagernet.libghostty.TerminalUiHandler
+import io.github.sagernet.libghostty.GhosttyUiHandler
+import io.github.sagernet.libghostty.R
 
 @Stable
-public class TerminalDialogState : TerminalUiHandler {
+public class GhosttyDialogState : GhosttyUiHandler {
 
     internal sealed interface Request {
         class UnsafePaste(val paste: () -> Unit) : Request
@@ -46,14 +47,14 @@ public class TerminalDialogState : TerminalUiHandler {
 }
 
 @Composable
-public fun rememberTerminalDialogState(): TerminalDialogState = remember { TerminalDialogState() }
+public fun rememberGhosttyDialogState(): GhosttyDialogState = remember { GhosttyDialogState() }
 
 @Composable
-public fun TerminalDialogs(state: TerminalDialogState) {
+public fun GhosttyDialogs(state: GhosttyDialogState) {
     when (val request = state.request) {
         null -> {}
 
-        is TerminalDialogState.Request.UnsafePaste -> AlertDialog(
+        is GhosttyDialogState.Request.UnsafePaste -> AlertDialog(
             onDismissRequest = { state.request = null },
             title = { Text(stringResource(R.string.ghostty_paste_unsafe_title)) },
             text = { Text(stringResource(R.string.ghostty_paste_unsafe_message)) },
@@ -72,7 +73,7 @@ public fun TerminalDialogs(state: TerminalDialogState) {
             },
         )
 
-        is TerminalDialogState.Request.ClipboardRead -> AlertDialog(
+        is GhosttyDialogState.Request.ClipboardRead -> AlertDialog(
             onDismissRequest = {
                 state.request = null
                 request.respond(false)
@@ -97,7 +98,7 @@ public fun TerminalDialogs(state: TerminalDialogState) {
             },
         )
 
-        is TerminalDialogState.Request.LinkMenu -> AlertDialog(
+        is GhosttyDialogState.Request.LinkMenu -> AlertDialog(
             onDismissRequest = { state.request = null },
             title = { Text(request.url) },
             text = {

@@ -14,6 +14,7 @@ internal object GhosttyVt {
     const val EVENT_NOTIFICATION = 1 shl 4
     const val EVENT_PROGRESS = 1 shl 5
     const val EVENT_CLIPBOARD_READ = 1 shl 6
+    const val EVENT_COLORS = 1 shl 7
 
     const val CLIPBOARD_LOCATION_STANDARD = 0
     const val CLIPBOARD_LOCATION_SELECTION = 1
@@ -25,7 +26,15 @@ internal object GhosttyVt {
     const val PROGRESS_STATE_INDETERMINATE = 3
     const val PROGRESS_STATE_PAUSE = 4
 
-    external fun nativeCreate(cols: Int, rows: Int, maxScrollbackLines: Long, xtversion: String): Long
+    external fun nativeCreate(
+        cols: Int,
+        rows: Int,
+        maxScrollbackLines: Long,
+        xtversion: String,
+        terminfoName: String?,
+        cursorStyle: Int,
+        cursorBlink: Boolean,
+    ): Long
 
     external fun nativeFree(handle: Long)
 
@@ -127,6 +136,10 @@ internal object GhosttyVt {
     external fun nativeSelectionText(handle: Long): ByteArray?
 
     external fun nativeViewportText(handle: Long): ByteArray?
+
+    external fun nativeTranscriptText(handle: Long): ByteArray?
+
+    external fun nativeGetBackgroundColor(handle: Long): Int
 
     external fun nativeIsPasteSafe(data: ByteArray): Boolean
 

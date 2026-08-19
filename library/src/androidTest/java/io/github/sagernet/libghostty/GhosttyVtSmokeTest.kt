@@ -24,10 +24,23 @@ class GhosttyVtSmokeTest {
         val text: CharArray,
     )
 
+    private fun createTerminal(terminfoName: String? = "xterm-256color"): Long {
+        val handle = GhosttyVt.nativeCreate(
+            80,
+            24,
+            1000,
+            "libghostty-android-test",
+            terminfoName,
+            GhosttyCursorStyle.BLOCK.nativeValue,
+            true,
+        )
+        assertNotEquals("terminal creation failed", 0L, handle)
+        return handle
+    }
+
     @Test
     fun parseAndSnapshotColoredText() {
-        val handle = GhosttyVt.nativeCreate(80, 24, 1000, "libghostty-android-test")
-        assertNotEquals("terminal creation failed", 0L, handle)
+        val handle = createTerminal()
         try {
             val payload = "\u001b[38;2;255;0;0mred\u001b[0m\r\nplain".toByteArray(Charsets.UTF_8)
             val padded = ByteArray(payload.size + 7)
@@ -94,6 +107,58 @@ class GhosttyVtSmokeTest {
         } finally {
             GhosttyVt.nativeFree(handle)
         }
+    }
+
+    @Test
+    fun backgroundColorChangeRaisesColorsEvent() {
+        val handle = createTerminal()
+        try {
+            GhosttyVt.nativeTakeEventFlags(handle)
+            write(handle, "\u001b]11;#204060\u0007")
+            val flags = GhosttyVt.nativeTakeEventFlags(handle)
+            assertEquals(GhosttyVt.EVENT_COLORS, flags and GhosttyVt.EVENT_COLORS)
+            assertEquals(0xFF204060.toInt(), GhosttyVt.nativeGetBackgroundColor(handle))
+        } finally {
+            GhosttyVt.nativeFree(handle)
+        }
+    }
+
+    @Test
+    fun transcriptIncludesScrollback() {
+        val handle = createTerminal()
+        try {
+            for (i in 1..30) write(handle, "line-$i\r\n")
+            val viewport = GhosttyVt.nativeViewportText(handle)!!.toString(Charsets.UTF_8)
+            assertTrue("viewport still holds the first line", "line-1\n" !in viewport)
+            assertTrue("line-30" in viewport)
+            val transcript = GhosttyVt.nativeTranscriptText(handle)!!.toString(Charsets.UTF_8)
+            assertTrue("transcript lost the first line", "line-1\n" in transcript)
+            assertTrue("transcript lost the last line", "line-30" in transcript)
+        } finally {
+            GhosttyVt.nativeFree(handle)
+        }
+    }
+
+    @Test
+    fun xtgettcapReportsTerminfoName() {
+        val handle = createTerminal(terminfoName = "xterm-ghostty")
+        try {
+            // XTGETTCAP: DCS + q <hex of "TN"> ST
+            val response = write(handle, "\u001bP+q544e\u001b\\")
+            val expected = "xterm-ghostty".toByteArray(Charsets.US_ASCII)
+                .joinToString("") { "%02X".format(it) }
+            assertTrue(
+                "response ${response?.toString(Charsets.UTF_8)} lacks $expected",
+                response != null && expected in response.toString(Charsets.UTF_8).uppercase(),
+            )
+        } finally {
+            GhosttyVt.nativeFree(handle)
+        }
+    }
+
+    private fun write(handle: Long, text: String): ByteArray? {
+        val bytes = text.toByteArray(Charsets.UTF_8)
+        return GhosttyVt.nativeWrite(handle, bytes, 0, bytes.size)
     }
 
     private companion object {

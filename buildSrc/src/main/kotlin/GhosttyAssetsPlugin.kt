@@ -119,7 +119,65 @@ abstract class GhosttyThemesTask @Inject constructor(
     }
 }
 
-class GhosttyThemesPlugin : Plugin<Project> {
+abstract class GhosttyTerminfoTask @Inject constructor(
+    private val execOperations: ExecOperations,
+    private val fileSystemOperations: FileSystemOperations,
+) : DefaultTask() {
+    @get:Input
+    abstract val commit: Property<String>
+
+    @get:Internal
+    abstract val sourceDir: DirectoryProperty
+
+    @get:OutputDirectory
+    abstract val terminfoDir: DirectoryProperty
+
+    @TaskAction
+    fun run() {
+        val generator = File(temporaryDir, "generate-terminfo.zig")
+        generator.writeText(
+            """
+            const std = @import("std");
+            const terminfo = @import("ghostty_terminfo");
+
+            pub fn main(init: std.process.Init) !void {
+                var buffer: [4096]u8 = undefined;
+                var stdout = std.Io.File.stdout().writerStreaming(init.io, &buffer);
+                try terminfo.ghostty.encode(&stdout.interface);
+                try stdout.end();
+            }
+            """.trimIndent()
+        )
+        val sourceFile = File(temporaryDir, "ghostty.terminfo")
+        sourceFile.outputStream().use { output ->
+            execOperations.exec {
+                workingDir = temporaryDir
+                commandLine(
+                    "zig", "run",
+                    "--dep", "ghostty_terminfo",
+                    "-Mroot=${generator.absolutePath}",
+                    "-Mghostty_terminfo=${File(sourceDir.get().asFile, "src/terminfo/main.zig").absolutePath}",
+                )
+                standardOutput = output
+            }
+        }
+        val database = File(temporaryDir, "database")
+        fileSystemOperations.delete { delete(database) }
+        execOperations.exec {
+            commandLine("tic", "-x", "-o", database.absolutePath, sourceFile.absolutePath)
+        }
+        // tic names the first-letter subdirectory "x" on Linux and the hex
+        // form "78" on case-insensitive filesystems.
+        val compiled = database.walkTopDown().firstOrNull { it.isFile && it.name == "xterm-ghostty" }
+            ?: throw GradleException("xterm-ghostty not found under $database")
+        val terminfo = terminfoDir.get().asFile
+        fileSystemOperations.delete { delete(terminfo) }
+        terminfo.mkdirs()
+        compiled.copyTo(File(terminfo, "xterm-ghostty"))
+    }
+}
+
+class GhosttyAssetsPlugin : Plugin<Project> {
     override fun apply(project: Project) {
         val env = GhosttyEnv(project)
         val ghosttyAssetsDir = project.layout.buildDirectory.dir("ghostty-assets")
@@ -131,8 +189,15 @@ class GhosttyThemesPlugin : Plugin<Project> {
             themesDir.set(ghosttyAssetsDir.map { it.dir("ghostty-themes") })
         }
 
+        val ghosttyTerminfo = project.tasks.register<GhosttyTerminfoTask>("ghosttyTerminfo") {
+            dependsOn(env.source)
+            commit.set(env.commit)
+            sourceDir.set(env.sourceDir)
+            terminfoDir.set(ghosttyAssetsDir.map { it.dir("ghostty-terminfo") })
+        }
+
         project.tasks.named("preBuild") {
-            dependsOn(ghosttyThemes)
+            dependsOn(ghosttyThemes, ghosttyTerminfo)
         }
     }
 }

@@ -5,27 +5,27 @@ import android.graphics.Typeface
 import android.net.Uri
 import java.io.File
 
-public data class ImportedFont(
+public data class GhosttyImportedFont(
     val name: String,
     val path: String,
 )
 
-public object ImportedFontStore {
+public object GhosttyFontStore {
 
     private val FONT_EXTENSIONS = setOf("ttf", "otf", "ttc", "otc")
 
     private fun fontsDir(context: Context): File = File(context.filesDir, "fonts").also { it.mkdirs() }
 
-    public fun listImportedFonts(context: Context): List<ImportedFont> = fontsDir(context).listFiles()
+    public fun listImportedFonts(context: Context): List<GhosttyImportedFont> = fontsDir(context).listFiles()
         ?.filter { it.extension in FONT_EXTENSIONS }
         ?.mapNotNull { file ->
             loadTypeface(file.absolutePath)
-                ?.let { ImportedFont(name = file.nameWithoutExtension, path = file.absolutePath) }
+                ?.let { GhosttyImportedFont(name = file.nameWithoutExtension, path = file.absolutePath) }
         }
         ?.sortedBy { it.name }
         ?: emptyList()
 
-    public fun importFont(context: Context, uri: Uri): ImportedFont? {
+    public fun importFont(context: Context, uri: Uri): GhosttyImportedFont? {
         val resolver = context.contentResolver
         val inputStream = resolver.openInputStream(uri) ?: return null
         val fileName = uri.lastPathSegment
@@ -41,7 +41,7 @@ public object ImportedFontStore {
             destFile.delete()
             return null
         }
-        return ImportedFont(name = destFile.nameWithoutExtension, path = destFile.absolutePath)
+        return GhosttyImportedFont(name = destFile.nameWithoutExtension, path = destFile.absolutePath)
     }
 
     public fun deleteFont(context: Context, name: String) {

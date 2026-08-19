@@ -47,6 +47,7 @@ constexpr jint kEventPwd = 1 << 3;
 constexpr jint kEventNotification = 1 << 4;
 constexpr jint kEventProgress = 1 << 5;
 constexpr jint kEventClipboardRead = 1 << 6;
+constexpr jint kEventColors = 1 << 7;
 
 constexpr uint32_t kKittyPlaceholder = 0x10EEEE;
 
@@ -179,6 +180,7 @@ struct Session {
   int32_t clipboardReadLocation = -1;
   bool syncOutputActive = false;
   std::chrono::steady_clock::time_point syncOutputSince{};
+  int32_t backgroundColor = 0;
 };
 
 void writePtyCallback(GhosttyTerminal, void* userdata, const uint8_t* data, size_t len) {
@@ -332,6 +334,15 @@ int32_t argb(GhosttyColorRgb color) {
                               (static_cast<uint32_t>(color.g) << 8) | color.b);
 }
 
+int32_t effectiveBackgroundColor(Session* session) {
+  GhosttyColorRgb color{};
+  if (ghostty_terminal_get(session->term, GHOSTTY_TERMINAL_DATA_COLOR_BACKGROUND, &color) !=
+      GHOSTTY_SUCCESS) {
+    return 0;
+  }
+  return argb(color);
+}
+
 bool parseColor(JNIEnv* env, jstring str, GhosttyColorRgb* out) {
   const char* utf = env->GetStringUTFChars(str, nullptr);
   if (utf == nullptr) return false;
@@ -467,7 +478,8 @@ extern "C" {
 
 JNIEXPORT jlong JNICALL
 Java_io_github_sagernet_libghostty_GhosttyVt_nativeCreate(
-    JNIEnv* env, jobject, jint cols, jint rows, jlong maxScrollbackLines, jstring xtversion) {
+    JNIEnv* env, jobject, jint cols, jint rows, jlong maxScrollbackLines, jstring xtversion,
+    jstring terminfoName, jint cursorStyle, jboolean cursorBlink) {
   auto* session = new Session();
 
   if (xtversion != nullptr) {
@@ -539,18 +551,28 @@ Java_io_github_sagernet_libghostty_GhosttyVt_nativeCreate(
   const size_t scrollbackLines = static_cast<size_t>(maxScrollbackLines);
   ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES, &scrollbackLines);
 
-  GhosttyString terminfoName{};
-  terminfoName.ptr = reinterpret_cast<const uint8_t*>("xterm-256color");
-  terminfoName.len = strlen("xterm-256color");
-  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_TERMINFO_NAME, &terminfoName);
+  if (terminfoName != nullptr) {
+    const char* utf = env->GetStringUTFChars(terminfoName, nullptr);
+    if (utf != nullptr) {
+      GhosttyString name{};
+      name.ptr = reinterpret_cast<const uint8_t*>(utf);
+      name.len = strlen(utf);
+      ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_TERMINFO_NAME, &name);
+      env->ReleaseStringUTFChars(terminfoName, utf);
+    }
+  }
 
   GhosttyColorRgb bg{0x00, 0x00, 0x00};
   GhosttyColorRgb fg{0xFF, 0xFF, 0xFF};
   ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND, &bg);
   ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND, &fg);
 
-  const bool blinkDefault = true;
+  const auto style = static_cast<GhosttyTerminalCursorStyle>(cursorStyle);
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_STYLE, &style);
+  const bool blinkDefault = cursorBlink != JNI_FALSE;
   ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_BLINK, &blinkDefault);
+
+  session->backgroundColor = effectiveBackgroundColor(session);
 
   return static_cast<jlong>(reinterpret_cast<intptr_t>(session));
 }
@@ -575,6 +597,14 @@ Java_io_github_sagernet_libghostty_GhosttyVt_nativeWrite(
                               reinterpret_cast<const uint8_t*>(bytes) + offset,
                               static_cast<size_t>(length));
     env->ReleaseByteArrayElements(data, bytes, JNI_ABORT);
+
+    // OSC 11 changes the background without any terminal callback; diff
+    // the effective color around each write to surface it as an event.
+    const int32_t background = effectiveBackgroundColor(session);
+    if (background != session->backgroundColor) {
+      session->backgroundColor = background;
+      session->pendingEvents |= kEventColors;
+    }
   }
 
   if (session->ptyOut.empty()) return nullptr;
@@ -661,6 +691,7 @@ Java_io_github_sagernet_libghostty_GhosttyVt_nativeSetTheme(
     ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_COLOR_PALETTE, table);
   }
 
+  session->backgroundColor = effectiveBackgroundColor(session);
   markRenderDirtyFull(session);
 }
 
@@ -1088,6 +1119,39 @@ Java_io_github_sagernet_libghostty_GhosttyVt_nativeViewportText(
   selection.end = end;
   selection.rectangle = false;
   return formatSelection(env, session, &selection);
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeTranscriptText(
+    JNIEnv* env, jobject, jlong handle) {
+  auto* session = fromHandle(handle);
+  auto options = GHOSTTY_INIT_SIZED(GhosttyFormatterTerminalOptions);
+  options.emit = GHOSTTY_FORMATTER_FORMAT_PLAIN;
+  options.unwrap = true;
+  options.trim = true;
+  options.selection = nullptr;
+  GhosttyFormatter formatter = nullptr;
+  if (ghostty_formatter_terminal_new(&kMallocAllocator, &formatter, session->term, options) !=
+      GHOSTTY_SUCCESS) {
+    return nullptr;
+  }
+  uint8_t* data = nullptr;
+  size_t len = 0;
+  jbyteArray out = nullptr;
+  if (ghostty_formatter_format_alloc(formatter, &kMallocAllocator, &data, &len) ==
+          GHOSTTY_SUCCESS &&
+      data != nullptr) {
+    out = bytesToArray(env, reinterpret_cast<const char*>(data), len);
+    ghostty_free(&kMallocAllocator, data, len);
+  }
+  ghostty_formatter_free(formatter);
+  return out;
+}
+
+JNIEXPORT jint JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeGetBackgroundColor(
+    JNIEnv*, jobject, jlong handle) {
+  return effectiveBackgroundColor(fromHandle(handle));
 }
 
 JNIEXPORT jboolean JNICALL

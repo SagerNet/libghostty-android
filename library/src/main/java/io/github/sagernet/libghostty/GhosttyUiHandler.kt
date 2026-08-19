@@ -2,7 +2,7 @@ package io.github.sagernet.libghostty
 
 import android.content.Context
 
-public interface TerminalUiHandler {
+public interface GhosttyUiHandler {
 
     public fun confirmUnsafePaste(context: Context, paste: () -> Unit) {}
 

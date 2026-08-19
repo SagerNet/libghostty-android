@@ -24,7 +24,7 @@ dependencies {
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
 }
 
-apply<GhosttyThemesPlugin>()
+apply<GhosttyAssetsPlugin>()
 
 mavenPublishing {
     publishToMavenCentral()
