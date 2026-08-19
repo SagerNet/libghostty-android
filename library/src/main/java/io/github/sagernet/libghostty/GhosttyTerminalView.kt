@@ -182,10 +182,6 @@ public class GhosttyTerminalView @JvmOverloads constructor(
     private val handleDrawableEnd = resolveHandleDrawable(android.R.attr.textSelectHandleRight)
     private val magnifier = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) Magnifier(this) else null
 
-    private fun showMagnifier(x: Float, y: Float) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) magnifier?.show(x, y)
-    }
-
     private fun dismissMagnifier() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) magnifier?.dismiss()
     }
@@ -578,8 +574,9 @@ public class GhosttyTerminalView @JvmOverloads constructor(
     private fun updateGridGeometry(force: Boolean) {
         val activeSession = session ?: return
         if (width <= 0 || height <= 0 || !activeSession.terminalAlive) return
-        val newCols = max(2, floor(width / cellWidth).toInt())
-        val newRows = max(2, height / cellHeight)
+        val size = cellSize
+        val newCols = size.columnsFor(width)
+        val newRows = size.rowsFor(height)
         val changed = newCols != cols || newRows != rows
         cols = newCols
         rows = newRows
@@ -632,61 +629,59 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         val buffer = snapshotBuffer ?: return
         val canvas = bitmapCanvas ?: return
         session?.withTerminal { handle ->
-            renderFrameLocked(handle, buffer, canvas)
-        }
-    }
+            val rowCount = GhosttyVt.nativeSnapshot(handle, buffer)
+            if (rowCount == SNAPSHOT_SYNC_DEFERRED) {
+                removeCallbacks(syncRetryRunnable)
+                postDelayed(syncRetryRunnable, SYNC_OUTPUT_RETRY_MS)
+                return
+            }
+            if (rowCount < 0) return
+            GhosttyVt.nativeScrollbar(handle)?.let { scrollbar ->
+                scrollbarTotal = scrollbar[0]
+                scrollbarOffset = scrollbar[1]
+                scrollbarLen = scrollbar[2]
+            }
 
-    private fun renderFrameLocked(handle: Long, buffer: ByteBuffer, canvas: Canvas) {
-        val rowCount = GhosttyVt.nativeSnapshot(handle, buffer)
-        if (rowCount == SNAPSHOT_SYNC_DEFERRED) {
-            removeCallbacks(syncRetryRunnable)
-            postDelayed(syncRetryRunnable, SYNC_OUTPUT_RETRY_MS)
-            return
-        }
-        if (rowCount < 0) return
-        GhosttyVt.nativeScrollbar(handle)?.let { scrollbar ->
-            scrollbarTotal = scrollbar[0]
-            scrollbarOffset = scrollbar[1]
-            scrollbarLen = scrollbar[2]
-        }
+            buffer.position(0)
+            val version = buffer.int
+            if (version != SNAPSHOT_VERSION) {
+                Log.e(TAG, "snapshot version $version != $SNAPSHOT_VERSION; dropping frame")
+                return
+            }
+            val dirtyKind = buffer.int
+            val snapshotCols = buffer.int
+            buffer.int
+            defaultBackground = buffer.int
+            defaultForeground = buffer.int
+            cursorX = buffer.int
+            cursorY = buffer.int
+            cursorStyle = buffer.int
+            cursorVisible = buffer.int != 0
+            buffer.int
+            cursorBlinks = buffer.int != 0
+            cursorColor = buffer.int
+            val truncated = buffer.int != 0
+            passwordInput = buffer.int != 0
+            syncBlinkTimer()
 
-        buffer.position(0)
-        val version = buffer.int
-        if (version != SNAPSHOT_VERSION) {
-            Log.e(TAG, "snapshot version $version != $SNAPSHOT_VERSION; dropping frame")
-            return
-        }
-        val dirtyKind = buffer.int
-        val snapshotCols = buffer.int
-        buffer.int
-        defaultBackground = buffer.int
-        defaultForeground = buffer.int
-        cursorX = buffer.int
-        cursorY = buffer.int
-        cursorStyle = buffer.int
-        cursorVisible = buffer.int != 0
-        buffer.int
-        cursorBlinks = buffer.int != 0
-        cursorColor = buffer.int
-        val truncated = buffer.int != 0
-        passwordInput = buffer.int != 0
-        syncBlinkTimer()
+            if (dirtyKind == DIRTY_FULL) canvas.drawColor(defaultBackground)
+            repeat(rowCount) { drawRowRecord(buffer, canvas, snapshotCols) }
+            updateKittyPlacements(handle)
+            if (selectionActive) {
+                if (selectionBounds() == null) clearSelection() else invalidateActionModeContentRect()
+            }
+            invalidate()
 
-        if (dirtyKind == DIRTY_FULL) canvas.drawColor(defaultBackground)
-        repeat(rowCount) { drawRowRecord(buffer, canvas, snapshotCols) }
-        updateKittyPlacements(handle)
-        syncSelectionUi()
-        invalidate()
+            if (accessibilityManager.isEnabled && !accessibilityTextPending) {
+                accessibilityTextPending = true
+                postDelayed(accessibilityTextRunnable, ACCESSIBILITY_TEXT_DELAY_MS)
+            }
 
-        if (accessibilityManager.isEnabled && !accessibilityTextPending) {
-            accessibilityTextPending = true
-            postDelayed(accessibilityTextRunnable, ACCESSIBILITY_TEXT_DELAY_MS)
-        }
-
-        if (truncated) {
-            snapshotBuffer = ByteBuffer.allocateDirect(buffer.capacity() * 2)
-                .order(ByteOrder.LITTLE_ENDIAN)
-            scheduleFrame()
+            if (truncated) {
+                snapshotBuffer = ByteBuffer.allocateDirect(buffer.capacity() * 2)
+                    .order(ByteOrder.LITTLE_ENDIAN)
+                scheduleFrame()
+            }
         }
     }
 
@@ -951,15 +946,6 @@ public class GhosttyTerminalView @JvmOverloads constructor(
 
     private fun selectionEndExtraCols(row: Int): Int = if (row < rowSelectionEndWide.size && rowSelectionEndWide[row]) 1 else 0
 
-    private fun syncSelectionUi() {
-        if (!selectionActive) return
-        if (selectionBounds() == null) {
-            clearSelection()
-        } else {
-            invalidateActionModeContentRect()
-        }
-    }
-
     private fun clearSelection() {
         session?.withTerminal { GhosttyVt.nativeClearSelection(it) }
         selectionActive = false
@@ -1156,18 +1142,8 @@ public class GhosttyTerminalView @JvmOverloads constructor(
             GhosttyVt.nativeSetSelection(handle, dragAnchorCol, dragAnchorRow, col, row)
         } ?: return
         hideActionModeForDrag()
-        showMagnifier(x, y)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) magnifier?.show(x, y)
         scheduleFrame()
-    }
-
-    private fun endHandleDrag() {
-        draggingHandle = HANDLE_NONE
-        dismissMagnifier()
-        if (actionMode != null) {
-            invalidateActionModeContentRect()
-        } else {
-            startTerminalActionMode()
-        }
     }
 
     private fun drawSelectionHandles(canvas: Canvas) {
@@ -1208,11 +1184,9 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         )
     }
 
-    private fun wantsBlink(): Boolean = cursorBlinks && cursorVisible && isAttachedToWindow && hasWindowFocus() &&
-        animatorDurationScale != 0f
-
     private fun syncBlinkTimer() {
-        val wants = wantsBlink()
+        val wants = cursorBlinks && cursorVisible && isAttachedToWindow && hasWindowFocus() &&
+            animatorDurationScale != 0f
         if (wants && !blinkScheduled) {
             blinkScheduled = true
             postDelayed(blinkRunnable, BLINK_INTERVAL_MS)
@@ -1493,7 +1467,9 @@ public class GhosttyTerminalView @JvmOverloads constructor(
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
                     if (draggingHandle != HANDLE_NONE) {
-                        endHandleDrag()
+                        draggingHandle = HANDLE_NONE
+                        dismissMagnifier()
+                        if (actionMode != null) invalidateActionModeContentRect() else startTerminalActionMode()
                         return true
                     }
             }

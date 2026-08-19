@@ -329,9 +329,40 @@ bool installSelection(Session* session, const GhosttySelection* selection) {
   return true;
 }
 
+jbyteArray formatSelection(JNIEnv* env, Session* session, const GhosttySelection* selection) {
+  GhosttyTerminalSelectionFormatOptions options{};
+  options.size = sizeof(options);
+  options.emit = GHOSTTY_FORMATTER_FORMAT_PLAIN;
+  options.unwrap = true;
+  options.trim = true;
+  options.selection = selection;
+
+  size_t needed = 0;
+  GhosttyResult result =
+      ghostty_terminal_selection_format_buf(session->term, options, nullptr, 0, &needed);
+  if (result != GHOSTTY_OUT_OF_SPACE && result != GHOSTTY_SUCCESS) return nullptr;
+
+  std::vector<uint8_t> buf(needed);
+  size_t written = 0;
+  if (needed > 0) {
+    result = ghostty_terminal_selection_format_buf(session->term, options, buf.data(),
+                                                   buf.size(), &written);
+    if (result != GHOSTTY_SUCCESS) return nullptr;
+  }
+  return bytesToArray(env, reinterpret_cast<const char*>(buf.data()), written);
+}
+
 int32_t argb(GhosttyColorRgb color) {
   return static_cast<int32_t>(0xFF000000u | (static_cast<uint32_t>(color.r) << 16) |
                               (static_cast<uint32_t>(color.g) << 8) | color.b);
+}
+
+bool colorFromArgb(jlong value, GhosttyColorRgb* out) {
+  if (value < 0) return false;
+  out->r = static_cast<uint8_t>((value >> 16) & 0xFF);
+  out->g = static_cast<uint8_t>((value >> 8) & 0xFF);
+  out->b = static_cast<uint8_t>(value & 0xFF);
+  return true;
 }
 
 int32_t effectiveBackgroundColor(Session* session) {
@@ -341,17 +372,6 @@ int32_t effectiveBackgroundColor(Session* session) {
     return 0;
   }
   return argb(color);
-}
-
-bool parseColor(JNIEnv* env, jstring str, GhosttyColorRgb* out) {
-  const char* utf = env->GetStringUTFChars(str, nullptr);
-  if (utf == nullptr) return false;
-  const bool valid = ghostty_color_parse(utf, strlen(utf), out) == GHOSTTY_SUCCESS;
-  if (!valid) {
-    __android_log_print(ANDROID_LOG_VERBOSE, kLogTag, "ignoring invalid theme color: %s", utf);
-  }
-  env->ReleaseStringUTFChars(str, utf);
-  return valid;
 }
 
 bool modeSet(Session* session, GhosttyMode mode) {
@@ -653,14 +673,6 @@ Java_io_github_sagernet_libghostty_GhosttyVt_nativeResize(
   markRenderDirtyFull(session);
 }
 
-static bool colorFromArgb(jlong value, GhosttyColorRgb* out) {
-  if (value < 0) return false;
-  out->r = static_cast<uint8_t>((value >> 16) & 0xFF);
-  out->g = static_cast<uint8_t>((value >> 8) & 0xFF);
-  out->b = static_cast<uint8_t>(value & 0xFF);
-  return true;
-}
-
 JNIEXPORT void JNICALL
 Java_io_github_sagernet_libghostty_GhosttyVt_nativeSetTheme(
     JNIEnv* env, jobject, jlong handle, jlong foreground, jlong background,
@@ -698,8 +710,15 @@ Java_io_github_sagernet_libghostty_GhosttyVt_nativeSetTheme(
 JNIEXPORT jint JNICALL
 Java_io_github_sagernet_libghostty_GhosttyVt_nativeParseColor(
     JNIEnv* env, jobject, jstring color) {
+  const char* utf = env->GetStringUTFChars(color, nullptr);
+  if (utf == nullptr) return 0;
   GhosttyColorRgb rgb{};
-  return parseColor(env, color, &rgb) ? argb(rgb) : 0;
+  const bool valid = ghostty_color_parse(utf, strlen(utf), &rgb) == GHOSTTY_SUCCESS;
+  if (!valid) {
+    __android_log_print(ANDROID_LOG_VERBOSE, kLogTag, "ignoring invalid theme color: %s", utf);
+  }
+  env->ReleaseStringUTFChars(color, utf);
+  return valid ? argb(rgb) : 0;
 }
 
 JNIEXPORT void JNICALL
@@ -1068,29 +1087,6 @@ Java_io_github_sagernet_libghostty_GhosttyVt_nativeClearSelection(JNIEnv*, jobje
   auto* session = fromHandle(handle);
   ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_SELECTION, nullptr);
   markRenderDirtyFull(session);
-}
-
-jbyteArray formatSelection(JNIEnv* env, Session* session, const GhosttySelection* selection) {
-  GhosttyTerminalSelectionFormatOptions options{};
-  options.size = sizeof(options);
-  options.emit = GHOSTTY_FORMATTER_FORMAT_PLAIN;
-  options.unwrap = true;
-  options.trim = true;
-  options.selection = selection;
-
-  size_t needed = 0;
-  GhosttyResult result =
-      ghostty_terminal_selection_format_buf(session->term, options, nullptr, 0, &needed);
-  if (result != GHOSTTY_OUT_OF_SPACE && result != GHOSTTY_SUCCESS) return nullptr;
-
-  std::vector<uint8_t> buf(needed);
-  size_t written = 0;
-  if (needed > 0) {
-    result = ghostty_terminal_selection_format_buf(session->term, options, buf.data(),
-                                                   buf.size(), &written);
-    if (result != GHOSTTY_SUCCESS) return nullptr;
-  }
-  return bytesToArray(env, reinterpret_cast<const char*>(buf.data()), written);
 }
 
 JNIEXPORT jbyteArray JNICALL
