@@ -1,0 +1,25 @@
+name: Set up the build
+description: Installs Java, zig and Gradle, and restores the libghostty-vt cache.
+
+inputs:
+  zig-version:
+    description: zig release to install
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-java@v5
+      with:
+        distribution: temurin
+        java-version: 17
+    - uses: mlugg/setup-zig@v2
+      with:
+        version: ${{ inputs.zig-version }}
+    - name: Cache libghostty-vt objects
+      uses: actions/cache@v6
+      with:
+        path: build/ghostty/zig-cache
+        key: ghostty-vt-${{ inputs.zig-version }}-${{ hashFiles('GHOSTTY_REF', 'patches/ghostty/*.patch') }}
+        restore-keys: ghostty-vt-${{ inputs.zig-version }}-
+    - uses: gradle/actions/setup-gradle@v5

@@ -1,6 +1,6 @@
 package io.github.sagernet.libghostty
 
-/** Colors are ARGB values; null keeps the terminal default. [palette] holds 256 entries. */
+/** Colors are ARGB values; null keeps the terminal default. */
 public class GhosttyTheme(
     public val foreground: Int?,
     public val background: Int?,

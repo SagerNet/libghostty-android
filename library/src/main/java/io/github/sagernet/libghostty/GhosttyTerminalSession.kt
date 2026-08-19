@@ -3,10 +3,13 @@ package io.github.sagernet.libghostty
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
 import android.util.Log
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 /**
  * Threading: [feedOutput] and [finish] may be called from any thread. All other methods and
@@ -77,12 +80,8 @@ public class GhosttyTerminalSession(
     internal val terminalAlive: Boolean
         get() = synchronized(terminalAccess) { handle != 0L }
 
-    public val hasAttachedView: Boolean
-        get() = attachedView != null
-
     public var listener: Listener? = null
 
-    /** When false, clipboard write requests from the terminal are dropped. */
     public var systemClipboardWriteEnabled: Boolean = true
 
     public var transport: Transport? = null
@@ -97,7 +96,8 @@ public class GhosttyTerminalSession(
                         rows * cellHeightPixels,
                     )
                 } catch (e: Exception) {
-                    onTransportFailure("send resize", e)
+                    Log.e(TAG, "transport send resize failed", e)
+                    if (!isFinished) finish(-1)
                 }
             }
         }
@@ -112,7 +112,7 @@ public class GhosttyTerminalSession(
     public var workingDirectory: String? = null
         private set
 
-    /** A GhosttyVt.PROGRESS_STATE_* value. */
+    /** 0 remove, 1 set, 2 error, 3 indeterminate, 4 pause. */
     public var progressState: Int = GhosttyVt.PROGRESS_STATE_REMOVE
         private set
 
@@ -153,16 +153,16 @@ public class GhosttyTerminalSession(
         }
     }
 
-    // timg abandons its kitty graphics probe when the DA1 reply does not
-    // arrive within a small time budget.
     public fun feedOutput(data: ByteArray, offset: Int = 0, length: Int = data.size) {
         val response = withTerminal { GhosttyVt.nativeWrite(it, data, offset, length) }
         if (response != null && response.isNotEmpty()) {
+            // timg abandons its kitty graphics probe when the DA1 reply does not
+            // arrive within a small time budget.
             sendRawInput(response)
         }
         mainHandler.post {
             withTerminal { drainEvents(it) }
-            attachedView?.onSessionOutput()
+            attachedView?.scheduleFrame()
         }
     }
 
@@ -180,8 +180,8 @@ public class GhosttyTerminalSession(
         if (flags and GhosttyVt.EVENT_CLIPBOARD != 0) {
             val text = GhosttyVt.nativeTakeClipboard(handle)?.toString(Charsets.UTF_8)
             if (systemClipboardWriteEnabled && !text.isNullOrEmpty()) {
-                (context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager)
-                    ?.setPrimaryClip(ClipData.newPlainText(null, text))
+                (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
+                    .setPrimaryClip(ClipData.newPlainText(null, text))
             }
         }
         if (flags and GhosttyVt.EVENT_PWD != 0) {
@@ -193,12 +193,7 @@ public class GhosttyTerminalSession(
         if (flags and GhosttyVt.EVENT_NOTIFICATION != 0) {
             while (true) {
                 val packed = GhosttyVt.nativeTakeNotification(handle) ?: break
-                if (packed.size < 4) continue
-                val titleLength = (packed[0].toInt() and 0xFF) or
-                    ((packed[1].toInt() and 0xFF) shl 8) or
-                    ((packed[2].toInt() and 0xFF) shl 16) or
-                    ((packed[3].toInt() and 0xFF) shl 24)
-                if (titleLength < 0 || 4 + titleLength > packed.size) continue
+                val titleLength = ByteBuffer.wrap(packed).order(ByteOrder.LITTLE_ENDIAN).int
                 listener?.onNotification(
                     this,
                     String(packed, 4, titleLength, Charsets.UTF_8),
@@ -212,7 +207,7 @@ public class GhosttyTerminalSession(
         }
         if (flags and GhosttyVt.EVENT_PROGRESS != 0) {
             val progress = GhosttyVt.nativeGetProgress(handle)
-            if (progress != null && progress.size == 2) {
+            if (progress != null) {
                 progressState = progress[0]
                 progressPercent = progress[1]
                 listener?.onProgressChanged(this)
@@ -223,11 +218,7 @@ public class GhosttyTerminalSession(
     private fun pwdToPath(raw: String): String? {
         if (raw.isEmpty()) return null
         if (!raw.startsWith("file://")) return raw
-        val withoutScheme = raw.removePrefix("file://")
-        val slash = withoutScheme.indexOf('/')
-        if (slash < 0) return null
-        return runCatching { java.net.URLDecoder.decode(withoutScheme.substring(slash), "UTF-8") }
-            .getOrNull()
+        return Uri.parse(raw).path?.takeIf { it.isNotEmpty() }
     }
 
     public fun setColorScheme(dark: Boolean) {
@@ -255,8 +246,8 @@ public class GhosttyTerminalSession(
         }
     }
 
-    private fun readClipboardText(): String? = (context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager)
-        ?.primaryClip
+    internal fun readClipboardText(): String? = (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
+        .primaryClip
         ?.takeIf { it.itemCount > 0 }
         ?.getItemAt(0)
         ?.coerceToText(context)
@@ -279,11 +270,17 @@ public class GhosttyTerminalSession(
     }
 
     public fun sendTypedInput(data: ByteArray) {
-        transportSend(sanitizeInput(data))
+        sendRawInput(sanitizeInput(data))
     }
 
     public fun sendRawInput(data: ByteArray) {
-        transportSend(data)
+        val currentTransport = transport ?: return
+        try {
+            currentTransport.sendInput(data)
+        } catch (e: Exception) {
+            Log.e(TAG, "transport send input failed", e)
+            if (!isFinished) finish(-1)
+        }
     }
 
     public fun screenText(): String? = withTerminal { GhosttyVt.nativeViewportText(it) }
@@ -291,22 +288,6 @@ public class GhosttyTerminalSession(
 
     public fun selectionText(): String? = withTerminal { GhosttyVt.nativeSelectionText(it) }
         ?.toString(Charsets.UTF_8)
-
-    private fun transportSend(data: ByteArray) {
-        val currentTransport = transport ?: return
-        try {
-            currentTransport.sendInput(data)
-        } catch (e: Exception) {
-            onTransportFailure("send input", e)
-        }
-    }
-
-    private fun onTransportFailure(operation: String, e: Exception) {
-        Log.e(TAG, "transport $operation failed", e)
-        if (!isFinished) {
-            finish(-1)
-        }
-    }
 
     public fun resize(columns: Int, rows: Int, cellWidthPixels: Int, cellHeightPixels: Int) {
         val changed = columns != this.columns || rows != this.rows ||
@@ -321,7 +302,8 @@ public class GhosttyTerminalSession(
         try {
             currentTransport.sendResize(columns, rows, columns * cellWidthPixels, rows * cellHeightPixels)
         } catch (e: Exception) {
-            onTransportFailure("send resize", e)
+            Log.e(TAG, "transport send resize failed", e)
+            if (!isFinished) finish(-1)
         }
     }
 
@@ -331,16 +313,16 @@ public class GhosttyTerminalSession(
         withTerminal {
             GhosttyVt.nativeSetTheme(
                 it,
-                theme.foreground?.toArgbLong() ?: -1L,
-                theme.background?.toArgbLong() ?: -1L,
-                theme.cursorColor?.toArgbLong() ?: -1L,
-                LongArray(theme.palette.size) { index -> theme.palette[index]?.toArgbLong() ?: -1L },
+                theme.foreground?.toUInt()?.toLong() ?: -1L,
+                theme.background?.toUInt()?.toLong() ?: -1L,
+                theme.cursorColor?.toUInt()?.toLong() ?: -1L,
+                LongArray(theme.palette.size) { index ->
+                    theme.palette[index]?.toUInt()?.toLong() ?: -1L
+                },
             )
         }
-        attachedView?.onSessionUpdated()
+        attachedView?.scheduleFrame()
     }
-
-    private fun Int.toArgbLong(): Long = toLong() and 0xFFFFFFFFL
 
     public fun finish(exitCode: Int = 0) {
         this.exitCode = exitCode

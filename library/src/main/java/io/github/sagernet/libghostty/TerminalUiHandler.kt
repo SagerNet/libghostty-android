@@ -2,10 +2,6 @@ package io.github.sagernet.libghostty
 
 import android.content.Context
 
-/**
- * The default implementations show no UI: an unsafe paste is dropped, a clipboard read request
- * is denied, and a link is opened without a menu.
- */
 public interface TerminalUiHandler {
 
     public fun confirmUnsafePaste(context: Context, paste: () -> Unit) {}

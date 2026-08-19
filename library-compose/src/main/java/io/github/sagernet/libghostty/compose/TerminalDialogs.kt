@@ -19,11 +19,6 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.github.sagernet.libghostty.TerminalUiHandler
 
-/**
- * A [TerminalUiHandler] whose requests are shown by [TerminalDialogs]. Assign it to
- * [io.github.sagernet.libghostty.GhosttyTerminalView.uiHandler] and place [TerminalDialogs]
- * in the composition.
- */
 @Stable
 public class TerminalDialogState : TerminalUiHandler {
 

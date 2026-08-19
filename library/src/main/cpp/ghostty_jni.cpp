@@ -1,4 +1,5 @@
 #include <jni.h>
+#include <android/input.h>
 #include <android/keycodes.h>
 #include <android/log.h>
 
@@ -283,16 +284,20 @@ GhosttyClipboardWriteResult clipboardWriteCallback(GhosttyTerminal, void* userda
   return GHOSTTY_CLIPBOARD_WRITE_RESULT_UNSUPPORTED;
 }
 
+jbyteArray bytesToArray(JNIEnv* env, const char* data, size_t len) {
+  jbyteArray out = env->NewByteArray(static_cast<jsize>(len));
+  if (out == nullptr) return nullptr;
+  env->SetByteArrayRegion(out, 0, static_cast<jsize>(len),
+                          reinterpret_cast<const jbyte*>(data));
+  return out;
+}
+
 jbyteArray stringData(JNIEnv* env, Session* session, GhosttyTerminalData key) {
   GhosttyString str{};
   if (ghostty_terminal_get(session->term, key, &str) != GHOSTTY_SUCCESS || str.len == 0) {
     return nullptr;
   }
-  jbyteArray out = env->NewByteArray(static_cast<jsize>(str.len));
-  if (out == nullptr) return nullptr;
-  env->SetByteArrayRegion(out, 0, static_cast<jsize>(str.len),
-                          reinterpret_cast<const jbyte*>(str.ptr));
-  return out;
+  return bytesToArray(env, reinterpret_cast<const char*>(str.ptr), str.len);
 }
 
 Session* fromHandle(jlong handle) {
@@ -328,7 +333,6 @@ int32_t argb(GhosttyColorRgb color) {
 }
 
 bool parseColor(JNIEnv* env, jstring str, GhosttyColorRgb* out) {
-  if (str == nullptr) return false;
   const char* utf = env->GetStringUTFChars(str, nullptr);
   if (utf == nullptr) return false;
   const bool valid = ghostty_color_parse(utf, strlen(utf), out) == GHOSTTY_SUCCESS;
@@ -347,14 +351,6 @@ bool modeSet(Session* session, GhosttyMode mode) {
     return false;
   }
   return config.value;
-}
-
-jbyteArray bytesToArray(JNIEnv* env, const char* data, size_t len) {
-  jbyteArray out = env->NewByteArray(static_cast<jsize>(len));
-  if (out == nullptr) return nullptr;
-  env->SetByteArrayRegion(out, 0, static_cast<jsize>(len),
-                          reinterpret_cast<const jbyte*>(data));
-  return out;
 }
 
 void destroySession(Session* session) {
@@ -437,37 +433,19 @@ GhosttyKey mapKey(int32_t keyCode) {
   }
 }
 
-constexpr int32_t kMetaShiftOn = 0x1;
-constexpr int32_t kMetaShiftRightOn = 0x80;
-constexpr int32_t kMetaAltOn = 0x02;
-constexpr int32_t kMetaAltRightOn = 0x20;
-constexpr int32_t kMetaCtrlOn = 0x1000;
-constexpr int32_t kMetaCtrlRightOn = 0x4000;
-constexpr int32_t kMetaMetaOn = 0x10000;
-constexpr int32_t kMetaMetaRightOn = 0x40000;
-constexpr int32_t kMetaCapsLockOn = 0x100000;
-constexpr int32_t kMetaNumLockOn = 0x200000;
-
 GhosttyMods mapMods(int32_t metaState) {
   GhosttyMods mods = 0;
-  if (metaState & kMetaShiftOn) mods |= GHOSTTY_MODS_SHIFT;
-  if (metaState & kMetaShiftRightOn) mods |= GHOSTTY_MODS_SHIFT_SIDE;
-  if (metaState & kMetaCtrlOn) mods |= GHOSTTY_MODS_CTRL;
-  if (metaState & kMetaCtrlRightOn) mods |= GHOSTTY_MODS_CTRL_SIDE;
-  if (metaState & kMetaAltOn) mods |= GHOSTTY_MODS_ALT;
-  if (metaState & kMetaAltRightOn) mods |= GHOSTTY_MODS_ALT_SIDE;
-  if (metaState & kMetaMetaOn) mods |= GHOSTTY_MODS_SUPER;
-  if (metaState & kMetaMetaRightOn) mods |= GHOSTTY_MODS_SUPER_SIDE;
-  if (metaState & kMetaCapsLockOn) mods |= GHOSTTY_MODS_CAPS_LOCK;
-  if (metaState & kMetaNumLockOn) mods |= GHOSTTY_MODS_NUM_LOCK;
+  if (metaState & AMETA_SHIFT_ON) mods |= GHOSTTY_MODS_SHIFT;
+  if (metaState & AMETA_SHIFT_RIGHT_ON) mods |= GHOSTTY_MODS_SHIFT_SIDE;
+  if (metaState & AMETA_CTRL_ON) mods |= GHOSTTY_MODS_CTRL;
+  if (metaState & AMETA_CTRL_RIGHT_ON) mods |= GHOSTTY_MODS_CTRL_SIDE;
+  if (metaState & AMETA_ALT_ON) mods |= GHOSTTY_MODS_ALT;
+  if (metaState & AMETA_ALT_RIGHT_ON) mods |= GHOSTTY_MODS_ALT_SIDE;
+  if (metaState & AMETA_META_ON) mods |= GHOSTTY_MODS_SUPER;
+  if (metaState & AMETA_META_RIGHT_ON) mods |= GHOSTTY_MODS_SUPER_SIDE;
+  if (metaState & AMETA_CAPS_LOCK_ON) mods |= GHOSTTY_MODS_CAPS_LOCK;
+  if (metaState & AMETA_NUM_LOCK_ON) mods |= GHOSTTY_MODS_NUM_LOCK;
   return mods;
-}
-
-void setTerminalOption(Session* session, GhosttyTerminalOption option, const void* value,
-                       const char* name) {
-  if (ghostty_terminal_set(session->term, option, value) != GHOSTTY_SUCCESS) {
-    __android_log_print(ANDROID_LOG_WARN, kLogTag, "terminal_set %s failed", name);
-  }
 }
 
 uint32_t appendUtf16(uint32_t cp, uint16_t* out, uint32_t used, uint32_t cap) {
@@ -528,57 +506,51 @@ Java_io_github_sagernet_libghostty_GhosttyVt_nativeCreate(
   ghostty_mouse_encoder_setopt(session->mouseEncoder,
                                GHOSTTY_MOUSE_ENCODER_OPT_TRACK_LAST_CELL, &trackLastCell);
 
-  setTerminalOption(session, GHOSTTY_TERMINAL_OPT_USERDATA, session, "userdata");
-  setTerminalOption(session, GHOSTTY_TERMINAL_OPT_WRITE_PTY,
-                    reinterpret_cast<const void*>(&writePtyCallback), "write_pty");
-  setTerminalOption(session, GHOSTTY_TERMINAL_OPT_BELL,
-                    reinterpret_cast<const void*>(&bellCallback), "bell");
-  setTerminalOption(session, GHOSTTY_TERMINAL_OPT_TITLE_CHANGED,
-                    reinterpret_cast<const void*>(&titleChangedCallback), "title_changed");
-  setTerminalOption(session, GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE,
-                    reinterpret_cast<const void*>(&clipboardWriteCallback), "clipboard_write");
-  setTerminalOption(session, GHOSTTY_TERMINAL_OPT_DEVICE_ATTRIBUTES,
-                    reinterpret_cast<const void*>(&deviceAttributesCallback),
-                    "device_attributes");
-  setTerminalOption(session, GHOSTTY_TERMINAL_OPT_SIZE,
-                    reinterpret_cast<const void*>(&sizeCallback), "size");
-  setTerminalOption(session, GHOSTTY_TERMINAL_OPT_PWD_CHANGED,
-                    reinterpret_cast<const void*>(&pwdChangedCallback), "pwd_changed");
-  setTerminalOption(session, GHOSTTY_TERMINAL_OPT_DESKTOP_NOTIFICATION,
-                    reinterpret_cast<const void*>(&desktopNotificationCallback),
-                    "desktop_notification");
-  setTerminalOption(session, GHOSTTY_TERMINAL_OPT_PROGRESS_REPORT,
-                    reinterpret_cast<const void*>(&progressReportCallback),
-                    "progress_report");
-  setTerminalOption(session, GHOSTTY_TERMINAL_OPT_COLOR_SCHEME,
-                    reinterpret_cast<const void*>(&colorSchemeCallback), "color_scheme");
-  setTerminalOption(session, GHOSTTY_TERMINAL_OPT_XTVERSION,
-                    reinterpret_cast<const void*>(&xtversionCallback), "xtversion");
-  setTerminalOption(session, GHOSTTY_TERMINAL_OPT_CLIPBOARD_READ,
-                    reinterpret_cast<const void*>(&clipboardReadCallback), "clipboard_read");
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_USERDATA, session);
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_WRITE_PTY,
+                       reinterpret_cast<const void*>(&writePtyCallback));
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_BELL,
+                       reinterpret_cast<const void*>(&bellCallback));
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_TITLE_CHANGED,
+                       reinterpret_cast<const void*>(&titleChangedCallback));
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE,
+                       reinterpret_cast<const void*>(&clipboardWriteCallback));
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_DEVICE_ATTRIBUTES,
+                       reinterpret_cast<const void*>(&deviceAttributesCallback));
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_SIZE,
+                       reinterpret_cast<const void*>(&sizeCallback));
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_PWD_CHANGED,
+                       reinterpret_cast<const void*>(&pwdChangedCallback));
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_DESKTOP_NOTIFICATION,
+                       reinterpret_cast<const void*>(&desktopNotificationCallback));
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_PROGRESS_REPORT,
+                       reinterpret_cast<const void*>(&progressReportCallback));
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_COLOR_SCHEME,
+                       reinterpret_cast<const void*>(&colorSchemeCallback));
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_XTVERSION,
+                       reinterpret_cast<const void*>(&xtversionCallback));
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_CLIPBOARD_READ,
+                       reinterpret_cast<const void*>(&clipboardReadCallback));
 
   const uint64_t kittyStorageLimit = 128 * 1024 * 1024;
-  setTerminalOption(session, GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT, &kittyStorageLimit,
-                    "kitty_image_storage_limit");
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT,
+                       &kittyStorageLimit);
 
   const size_t scrollbackLines = static_cast<size_t>(maxScrollbackLines);
-  setTerminalOption(session, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES, &scrollbackLines,
-                    "scrollback_max_lines");
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES, &scrollbackLines);
 
   GhosttyString terminfoName{};
   terminfoName.ptr = reinterpret_cast<const uint8_t*>("xterm-256color");
   terminfoName.len = strlen("xterm-256color");
-  setTerminalOption(session, GHOSTTY_TERMINAL_OPT_TERMINFO_NAME, &terminfoName,
-                    "terminfo_name");
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_TERMINFO_NAME, &terminfoName);
 
   GhosttyColorRgb bg{0x00, 0x00, 0x00};
   GhosttyColorRgb fg{0xFF, 0xFF, 0xFF};
-  setTerminalOption(session, GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND, &bg, "color_background");
-  setTerminalOption(session, GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND, &fg, "color_foreground");
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND, &bg);
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND, &fg);
 
   const bool blinkDefault = true;
-  setTerminalOption(session, GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_BLINK, &blinkDefault,
-                    "default_cursor_blink");
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_BLINK, &blinkDefault);
 
   return static_cast<jlong>(reinterpret_cast<intptr_t>(session));
 }
@@ -592,7 +564,6 @@ JNIEXPORT jbyteArray JNICALL
 Java_io_github_sagernet_libghostty_GhosttyVt_nativeWrite(
     JNIEnv* env, jobject, jlong handle, jbyteArray data, jint offset, jint length) {
   auto* session = fromHandle(handle);
-  if (session == nullptr || data == nullptr) return nullptr;
 
   const jsize arrayLen = env->GetArrayLength(data);
   if (offset < 0 || length < 0 || offset > arrayLen - length) return nullptr;
@@ -607,19 +578,14 @@ Java_io_github_sagernet_libghostty_GhosttyVt_nativeWrite(
   }
 
   if (session->ptyOut.empty()) return nullptr;
-  const auto outLen = static_cast<jsize>(session->ptyOut.size());
-  jbyteArray out = env->NewByteArray(outLen);
-  if (out == nullptr) return nullptr;
-  env->SetByteArrayRegion(out, 0, outLen,
-                          reinterpret_cast<const jbyte*>(session->ptyOut.data()));
-  return out;
+  return bytesToArray(env, reinterpret_cast<const char*>(session->ptyOut.data()),
+                      session->ptyOut.size());
 }
 
 JNIEXPORT jint JNICALL
 Java_io_github_sagernet_libghostty_GhosttyVt_nativeTakeEventFlags(
     JNIEnv*, jobject, jlong handle) {
   auto* session = fromHandle(handle);
-  if (session == nullptr) return 0;
   const jint flags = session->pendingEvents;
   session->pendingEvents = 0;
   return flags;
@@ -629,7 +595,6 @@ JNIEXPORT jbyteArray JNICALL
 Java_io_github_sagernet_libghostty_GhosttyVt_nativeGetTitle(
     JNIEnv* env, jobject, jlong handle) {
   auto* session = fromHandle(handle);
-  if (session == nullptr) return nullptr;
   return stringData(env, session, GHOSTTY_TERMINAL_DATA_TITLE);
 }
 
@@ -637,11 +602,9 @@ JNIEXPORT jbyteArray JNICALL
 Java_io_github_sagernet_libghostty_GhosttyVt_nativeTakeClipboard(
     JNIEnv* env, jobject, jlong handle) {
   auto* session = fromHandle(handle);
-  if (session == nullptr || session->clipboardText.empty()) return nullptr;
-  jbyteArray out = env->NewByteArray(static_cast<jsize>(session->clipboardText.size()));
+  if (session->clipboardText.empty()) return nullptr;
+  jbyteArray out = bytesToArray(env, session->clipboardText.data(), session->clipboardText.size());
   if (out == nullptr) return nullptr;
-  env->SetByteArrayRegion(out, 0, static_cast<jsize>(session->clipboardText.size()),
-                          reinterpret_cast<const jbyte*>(session->clipboardText.data()));
   session->clipboardText.clear();
   return out;
 }
@@ -650,7 +613,6 @@ JNIEXPORT void JNICALL
 Java_io_github_sagernet_libghostty_GhosttyVt_nativeResize(
     JNIEnv*, jobject, jlong handle, jint cols, jint rows, jint cellWidthPx, jint cellHeightPx) {
   auto* session = fromHandle(handle);
-  if (session == nullptr) return;
   session->cols = static_cast<uint16_t>(cols);
   session->rows = static_cast<uint16_t>(rows);
   session->cellWidthPx = static_cast<uint32_t>(cellWidthPx);
@@ -674,7 +636,6 @@ Java_io_github_sagernet_libghostty_GhosttyVt_nativeSetTheme(
     JNIEnv* env, jobject, jlong handle, jlong foreground, jlong background,
     jlong cursor, jlongArray palette) {
   auto* session = fromHandle(handle);
-  if (session == nullptr) return;
 
   GhosttyColorRgb rgb{};
   ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND,
@@ -714,7 +675,6 @@ JNIEXPORT void JNICALL
 Java_io_github_sagernet_libghostty_GhosttyVt_nativeScroll(
     JNIEnv*, jobject, jlong handle, jint deltaRows) {
   auto* session = fromHandle(handle);
-  if (session == nullptr) return;
   GhosttyTerminalScrollViewport behavior{};
   behavior.tag = GHOSTTY_SCROLL_VIEWPORT_DELTA;
   behavior.value.delta = deltaRows;
@@ -725,7 +685,6 @@ JNIEXPORT void JNICALL
 Java_io_github_sagernet_libghostty_GhosttyVt_nativeScrollToBottom(
     JNIEnv*, jobject, jlong handle) {
   auto* session = fromHandle(handle);
-  if (session == nullptr) return;
   GhosttyTerminalScrollViewport behavior{};
   behavior.tag = GHOSTTY_SCROLL_VIEWPORT_BOTTOM;
   ghostty_terminal_scroll_viewport(session->term, behavior);
@@ -735,7 +694,6 @@ JNIEXPORT jint JNICALL
 Java_io_github_sagernet_libghostty_GhosttyVt_nativeViewportState(
     JNIEnv*, jobject, jlong handle) {
   auto* session = fromHandle(handle);
-  if (session == nullptr) return 0;
   jint state = 0;
   GhosttyTerminalScreen screen = GHOSTTY_TERMINAL_SCREEN_PRIMARY;
   if (ghostty_terminal_get(session->term, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &screen) ==
@@ -749,13 +707,6 @@ Java_io_github_sagernet_libghostty_GhosttyVt_nativeViewportState(
       mouseTracking) {
     state |= 2;
   }
-  GhosttyTerminalModeConfig sgrMouse{};
-  sgrMouse.mode = GHOSTTY_MODE_SGR_MOUSE;
-  if (ghostty_terminal_get(session->term, GHOSTTY_TERMINAL_DATA_MODE, &sgrMouse) ==
-          GHOSTTY_SUCCESS &&
-      sgrMouse.value) {
-    state |= 4;
-  }
   return state;
 }
 
@@ -763,7 +714,6 @@ JNIEXPORT jlongArray JNICALL
 Java_io_github_sagernet_libghostty_GhosttyVt_nativeScrollbar(
     JNIEnv* env, jobject, jlong handle) {
   auto* session = fromHandle(handle);
-  if (session == nullptr) return nullptr;
   GhosttyTerminalScrollbar scrollbar{};
   if (ghostty_terminal_get(session->term, GHOSTTY_TERMINAL_DATA_SCROLLBAR, &scrollbar) !=
       GHOSTTY_SUCCESS) {
@@ -782,7 +732,6 @@ JNIEXPORT jint JNICALL
 Java_io_github_sagernet_libghostty_GhosttyVt_nativeSnapshot(
     JNIEnv* env, jobject, jlong handle, jobject buffer) {
   auto* session = fromHandle(handle);
-  if (session == nullptr || buffer == nullptr) return -1;
   auto* base = static_cast<uint8_t*>(env->GetDirectBufferAddress(buffer));
   const auto cap = static_cast<size_t>(env->GetDirectBufferCapacity(buffer));
   if (base == nullptr || cap < kHeaderBytes) return -1;
@@ -1038,7 +987,6 @@ JNIEXPORT jboolean JNICALL
 Java_io_github_sagernet_libghostty_GhosttyVt_nativeSelectWord(
     JNIEnv*, jobject, jlong handle, jint col, jint row) {
   auto* session = fromHandle(handle);
-  if (session == nullptr) return JNI_FALSE;
   GhosttyGridRef ref{};
   ref.size = sizeof(ref);
   if (!viewportGridRef(session, col, row, &ref)) return JNI_FALSE;
@@ -1056,7 +1004,6 @@ Java_io_github_sagernet_libghostty_GhosttyVt_nativeSelectWord(
 JNIEXPORT jboolean JNICALL
 Java_io_github_sagernet_libghostty_GhosttyVt_nativeSelectAll(JNIEnv*, jobject, jlong handle) {
   auto* session = fromHandle(handle);
-  if (session == nullptr) return JNI_FALSE;
   GhosttySelection selection{};
   selection.size = sizeof(selection);
   if (ghostty_terminal_select_all(session->term, &selection) != GHOSTTY_SUCCESS) {
@@ -1069,7 +1016,6 @@ JNIEXPORT jboolean JNICALL
 Java_io_github_sagernet_libghostty_GhosttyVt_nativeSetSelection(
     JNIEnv*, jobject, jlong handle, jint anchorCol, jint anchorRow, jint col, jint row) {
   auto* session = fromHandle(handle);
-  if (session == nullptr) return JNI_FALSE;
   GhosttyGridRef start{};
   start.size = sizeof(start);
   GhosttyGridRef end{};
@@ -1089,7 +1035,6 @@ Java_io_github_sagernet_libghostty_GhosttyVt_nativeSetSelection(
 JNIEXPORT void JNICALL
 Java_io_github_sagernet_libghostty_GhosttyVt_nativeClearSelection(JNIEnv*, jobject, jlong handle) {
   auto* session = fromHandle(handle);
-  if (session == nullptr) return;
   ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_SELECTION, nullptr);
   markRenderDirtyFull(session);
 }
@@ -1114,18 +1059,13 @@ jbyteArray formatSelection(JNIEnv* env, Session* session, const GhosttySelection
                                                    buf.size(), &written);
     if (result != GHOSTTY_SUCCESS) return nullptr;
   }
-  jbyteArray out = env->NewByteArray(static_cast<jsize>(written));
-  if (out == nullptr) return nullptr;
-  env->SetByteArrayRegion(out, 0, static_cast<jsize>(written),
-                          reinterpret_cast<const jbyte*>(buf.data()));
-  return out;
+  return bytesToArray(env, reinterpret_cast<const char*>(buf.data()), written);
 }
 
 JNIEXPORT jbyteArray JNICALL
 Java_io_github_sagernet_libghostty_GhosttyVt_nativeSelectionText(
     JNIEnv* env, jobject, jlong handle) {
   auto* session = fromHandle(handle);
-  if (session == nullptr) return nullptr;
   return formatSelection(env, session, nullptr);
 }
 
@@ -1133,7 +1073,7 @@ JNIEXPORT jbyteArray JNICALL
 Java_io_github_sagernet_libghostty_GhosttyVt_nativeViewportText(
     JNIEnv* env, jobject, jlong handle) {
   auto* session = fromHandle(handle);
-  if (session == nullptr || session->cols == 0 || session->rows == 0) return nullptr;
+  if (session->cols == 0 || session->rows == 0) return nullptr;
   GhosttyGridRef start{};
   start.size = sizeof(start);
   GhosttyGridRef end{};
@@ -1153,7 +1093,6 @@ Java_io_github_sagernet_libghostty_GhosttyVt_nativeViewportText(
 JNIEXPORT jboolean JNICALL
 Java_io_github_sagernet_libghostty_GhosttyVt_nativeIsPasteSafe(
     JNIEnv* env, jobject, jbyteArray data) {
-  if (data == nullptr) return JNI_TRUE;
   const jsize len = env->GetArrayLength(data);
   if (len == 0) return JNI_TRUE;
   jbyte* bytes = env->GetByteArrayElements(data, nullptr);
@@ -1167,35 +1106,25 @@ JNIEXPORT jbyteArray JNICALL
 Java_io_github_sagernet_libghostty_GhosttyVt_nativeEncodePaste(
     JNIEnv* env, jobject, jlong handle, jbyteArray data) {
   auto* session = fromHandle(handle);
-  if (session == nullptr || data == nullptr) return nullptr;
   const jsize len = env->GetArrayLength(data);
   std::vector<char> input(static_cast<size_t>(len));
   if (len > 0) {
     env->GetByteArrayRegion(data, 0, len, reinterpret_cast<jbyte*>(input.data()));
   }
 
-  GhosttyTerminalModeConfig bracketed{};
-  bracketed.mode = GHOSTTY_MODE_BRACKETED_PASTE;
-  if (ghostty_terminal_get(session->term, GHOSTTY_TERMINAL_DATA_MODE, &bracketed) !=
-      GHOSTTY_SUCCESS) {
-    bracketed.value = false;
-  }
+  const bool bracketed = modeSet(session, GHOSTTY_MODE_BRACKETED_PASTE);
 
   std::vector<char> out(input.size() + 16);
   size_t written = 0;
-  GhosttyResult result = ghostty_paste_encode(input.data(), input.size(), bracketed.value,
+  GhosttyResult result = ghostty_paste_encode(input.data(), input.size(), bracketed,
                                               out.data(), out.size(), &written);
   if (result == GHOSTTY_OUT_OF_SPACE) {
     out.resize(written);
-    result = ghostty_paste_encode(input.data(), input.size(), bracketed.value, out.data(),
+    result = ghostty_paste_encode(input.data(), input.size(), bracketed, out.data(),
                                   out.size(), &written);
   }
   if (result != GHOSTTY_SUCCESS) return nullptr;
-  jbyteArray outArray = env->NewByteArray(static_cast<jsize>(written));
-  if (outArray == nullptr) return nullptr;
-  env->SetByteArrayRegion(outArray, 0, static_cast<jsize>(written),
-                          reinterpret_cast<const jbyte*>(out.data()));
-  return outArray;
+  return bytesToArray(env, out.data(), written);
 }
 
 JNIEXPORT jbyteArray JNICALL
@@ -1203,7 +1132,6 @@ Java_io_github_sagernet_libghostty_GhosttyVt_nativeEncodeKey(
     JNIEnv* env, jobject, jlong handle, jint keyCode, jint action, jint metaState,
     jint unshiftedCodepoint, jboolean composing, jbyteArray utf8) {
   auto* session = fromHandle(handle);
-  if (session == nullptr) return nullptr;
 
   ghostty_key_encoder_setopt_from_terminal(session->encoder, session->term);
 
@@ -1246,11 +1174,7 @@ Java_io_github_sagernet_libghostty_GhosttyVt_nativeEncodeKey(
   if (utf8Bytes != nullptr) env->ReleaseByteArrayElements(utf8, utf8Bytes, JNI_ABORT);
 
   if (result != GHOSTTY_SUCCESS || written == 0) return nullptr;
-  jbyteArray outArray = env->NewByteArray(static_cast<jsize>(written));
-  if (outArray == nullptr) return nullptr;
-  env->SetByteArrayRegion(outArray, 0, static_cast<jsize>(written),
-                          reinterpret_cast<const jbyte*>(out));
-  return outArray;
+  return bytesToArray(env, out, written);
 }
 
 JNIEXPORT jbyteArray JNICALL
@@ -1258,7 +1182,6 @@ Java_io_github_sagernet_libghostty_GhosttyVt_nativeEncodeMouse(
     JNIEnv* env, jobject, jlong handle, jint action, jint button, jint col, jint row,
     jint metaState) {
   auto* session = fromHandle(handle);
-  if (session == nullptr) return nullptr;
 
   ghostty_mouse_encoder_setopt_from_terminal(session->mouseEncoder, session->term);
 
@@ -1297,18 +1220,13 @@ Java_io_github_sagernet_libghostty_GhosttyVt_nativeEncodeMouse(
       written == 0) {
     return nullptr;
   }
-  jbyteArray outArray = env->NewByteArray(static_cast<jsize>(written));
-  if (outArray == nullptr) return nullptr;
-  env->SetByteArrayRegion(outArray, 0, static_cast<jsize>(written),
-                          reinterpret_cast<const jbyte*>(buf));
-  return outArray;
+  return bytesToArray(env, buf, written);
 }
 
 JNIEXPORT jlongArray JNICALL
 Java_io_github_sagernet_libghostty_GhosttyVt_nativeKittyPlacements(
     JNIEnv* env, jobject, jlong handle) {
   auto* session = fromHandle(handle);
-  if (session == nullptr || session->kittyIterator == nullptr) return nullptr;
   GhosttyKittyGraphics graphics = nullptr;
   if (ghostty_terminal_get(session->term, GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS, &graphics) !=
       GHOSTTY_SUCCESS) {
@@ -1413,7 +1331,6 @@ JNIEXPORT jintArray JNICALL
 Java_io_github_sagernet_libghostty_GhosttyVt_nativeKittyImage(
     JNIEnv* env, jobject, jlong handle, jint imageId) {
   auto* session = fromHandle(handle);
-  if (session == nullptr) return nullptr;
   GhosttyKittyGraphics graphics = nullptr;
   if (ghostty_terminal_get(session->term, GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS, &graphics) !=
       GHOSTTY_SUCCESS) {
@@ -1492,7 +1409,6 @@ JNIEXPORT jbyteArray JNICALL
 Java_io_github_sagernet_libghostty_GhosttyVt_nativeGetPwd(
     JNIEnv* env, jobject, jlong handle) {
   auto* session = fromHandle(handle);
-  if (session == nullptr) return nullptr;
   return stringData(env, session, GHOSTTY_TERMINAL_DATA_PWD);
 }
 
@@ -1500,7 +1416,7 @@ JNIEXPORT jbyteArray JNICALL
 Java_io_github_sagernet_libghostty_GhosttyVt_nativeTakeNotification(
     JNIEnv* env, jobject, jlong handle) {
   auto* session = fromHandle(handle);
-  if (session == nullptr || session->notifications.empty()) return nullptr;
+  if (session->notifications.empty()) return nullptr;
   const auto [title, body] = std::move(session->notifications.front());
   session->notifications.pop_front();
   std::string packed;
@@ -1519,7 +1435,6 @@ JNIEXPORT jintArray JNICALL
 Java_io_github_sagernet_libghostty_GhosttyVt_nativeGetProgress(
     JNIEnv* env, jobject, jlong handle) {
   auto* session = fromHandle(handle);
-  if (session == nullptr) return nullptr;
   jintArray out = env->NewIntArray(2);
   if (out == nullptr) return nullptr;
   const jint values[2] = {session->progressState, session->progressPercent};
@@ -1531,7 +1446,6 @@ JNIEXPORT jbyteArray JNICALL
 Java_io_github_sagernet_libghostty_GhosttyVt_nativeSetColorScheme(
     JNIEnv* env, jobject, jlong handle, jboolean dark) {
   auto* session = fromHandle(handle);
-  if (session == nullptr) return nullptr;
   const bool newDark = dark != JNI_FALSE;
   const bool changed = session->colorSchemeDark != newDark;
   session->colorSchemeDark = newDark;
@@ -1551,7 +1465,6 @@ JNIEXPORT jint JNICALL
 Java_io_github_sagernet_libghostty_GhosttyVt_nativeTakeClipboardRead(
     JNIEnv*, jobject, jlong handle) {
   auto* session = fromHandle(handle);
-  if (session == nullptr) return -1;
   const jint location = session->clipboardReadLocation;
   session->clipboardReadLocation = -1;
   return location;
@@ -1561,7 +1474,7 @@ JNIEXPORT jbyteArray JNICALL
 Java_io_github_sagernet_libghostty_GhosttyVt_nativeHyperlinkAt(
     JNIEnv* env, jobject, jlong handle, jint col, jint row) {
   auto* session = fromHandle(handle);
-  if (session == nullptr || col < 0 || row < 0) return nullptr;
+  if (col < 0 || row < 0) return nullptr;
   if (ghostty_render_state_update(session->renderState, session->term) != GHOSTTY_SUCCESS) {
     return nullptr;
   }
@@ -1578,7 +1491,7 @@ JNIEXPORT jbyteArray JNICALL
 Java_io_github_sagernet_libghostty_GhosttyVt_nativeEncodeFocus(
     JNIEnv* env, jobject, jlong handle, jboolean gained) {
   auto* session = fromHandle(handle);
-  if (session == nullptr || !modeSet(session, GHOSTTY_MODE_FOCUS_EVENT)) return nullptr;
+  if (!modeSet(session, GHOSTTY_MODE_FOCUS_EVENT)) return nullptr;
   char buf[16];
   size_t written = 0;
   if (ghostty_focus_encode(gained != JNI_FALSE ? GHOSTTY_FOCUS_GAINED : GHOSTTY_FOCUS_LOST,

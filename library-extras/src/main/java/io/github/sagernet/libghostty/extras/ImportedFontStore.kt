@@ -12,30 +12,23 @@ public data class ImportedFont(
 
 public object ImportedFontStore {
 
+    private val FONT_EXTENSIONS = setOf("ttf", "otf", "ttc", "otc")
+
     private fun fontsDir(context: Context): File = File(context.filesDir, "fonts").also { it.mkdirs() }
 
-    public fun listImportedFonts(context: Context): List<ImportedFont> {
-        val dir = fontsDir(context)
-        if (!dir.exists()) return emptyList()
-        return dir.listFiles()
-            ?.filter { it.extension in listOf("ttf", "otf", "ttc", "otc") }
-            ?.mapNotNull { file ->
-                try {
-                    Typeface.createFromFile(file)
-                    ImportedFont(name = file.nameWithoutExtension, path = file.absolutePath)
-                } catch (_: Exception) {
-                    null
-                }
-            }
-            ?.sortedBy { it.name }
-            ?: emptyList()
-    }
+    public fun listImportedFonts(context: Context): List<ImportedFont> = fontsDir(context).listFiles()
+        ?.filter { it.extension in FONT_EXTENSIONS }
+        ?.mapNotNull { file ->
+            loadTypeface(file.absolutePath)
+                ?.let { ImportedFont(name = file.nameWithoutExtension, path = file.absolutePath) }
+        }
+        ?.sortedBy { it.name }
+        ?: emptyList()
 
     public fun importFont(context: Context, uri: Uri): ImportedFont? {
         val resolver = context.contentResolver
         val inputStream = resolver.openInputStream(uri) ?: return null
         val fileName = uri.lastPathSegment
-            ?.substringAfterLast('/')
             ?.takeIf { it.isNotEmpty() && it != "." && it != ".." }
             ?: "font.ttf"
         val destFile = File(fontsDir(context), fileName)
@@ -44,13 +37,11 @@ public object ImportedFontStore {
                 input.copyTo(output)
             }
         }
-        return try {
-            Typeface.createFromFile(destFile)
-            ImportedFont(name = destFile.nameWithoutExtension, path = destFile.absolutePath)
-        } catch (_: Exception) {
+        if (loadTypeface(destFile.absolutePath) == null) {
             destFile.delete()
-            null
+            return null
         }
+        return ImportedFont(name = destFile.nameWithoutExtension, path = destFile.absolutePath)
     }
 
     public fun deleteFont(context: Context, name: String) {

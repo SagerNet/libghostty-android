@@ -25,19 +25,11 @@ public object GhosttyThemeStore {
         }
     }.map { it.first }
 
-    private fun readIndex(context: Context): List<Pair<String, String?>> = try {
+    private fun readIndex(context: Context): List<Pair<String, String?>> =
         context.assets.open(THEME_INDEX_ASSET).bufferedReader().readLines().mapNotNull { line ->
-            val separator = line.indexOf('\t')
-            if (separator < 0) {
-                null
-            } else {
-                line.substring(0, separator) to line.substring(separator + 1).takeIf { it.isNotEmpty() }
-            }
+            val fields = line.split('\t', limit = 2)
+            if (fields.size < 2) null else fields[0] to fields[1].takeIf { it.isNotEmpty() }
         }
-    } catch (e: Exception) {
-        Log.e(TAG, "read theme index", e)
-        emptyList()
-    }
 
     public fun loadTheme(context: Context, name: String): GhosttyTheme? = try {
         var foreground: Int? = null
@@ -47,18 +39,16 @@ public object GhosttyThemeStore {
         var selectionForeground: Int? = null
         val palette = arrayOfNulls<Int>(256)
         context.assets.open("ghostty-themes/$name").bufferedReader().forEachLine { line ->
-            val separator = line.indexOf('=')
-            if (separator < 0) return@forEachLine
-            val key = line.substring(0, separator).trim()
-            val value = line.substring(separator + 1).trim()
+            val fields = line.split('=', limit = 2)
+            if (fields.size < 2) return@forEachLine
+            val key = fields[0].trim()
+            val value = fields[1].trim()
             when (key) {
                 "palette" -> {
-                    val entrySeparator = value.indexOf('=')
-                    if (entrySeparator > 0) {
-                        val index = value.substring(0, entrySeparator).trim().toIntOrNull()
-                        if (index != null && index in 0..255) {
-                            palette[index] = GhosttyColors.parse(value.substring(entrySeparator + 1).trim())
-                        }
+                    val entry = value.split('=', limit = 2)
+                    val index = if (entry.size < 2) null else entry[0].trim().toIntOrNull()
+                    if (index != null && index in 0..255) {
+                        palette[index] = GhosttyColors.parse(entry[1].trim())
                     }
                 }
                 "foreground" -> foreground = GhosttyColors.parse(value)

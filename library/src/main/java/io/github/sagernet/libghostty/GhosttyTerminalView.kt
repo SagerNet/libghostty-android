@@ -68,13 +68,11 @@ public class GhosttyTerminalView @JvmOverloads constructor(
 
     public var uiHandler: TerminalUiHandler = object : TerminalUiHandler {}
 
-    /** When false, a bell event does not run haptic feedback. */
     public var bellHapticEnabled: Boolean = true
 
-    /** When false, a tap does not show the soft keyboard. */
     public var showImeOnTap: Boolean = true
 
-    /** When false, a long press only follows hyperlinks the terminal reported, and plain text is never matched as a URL. */
+    /** Matches plain text as a URL, in addition to the hyperlinks the terminal reported. */
     public var urlDetectionEnabled: Boolean = true
 
     public var session: GhosttyTerminalSession? = null
@@ -192,11 +190,11 @@ public class GhosttyTerminalView @JvmOverloads constructor(
     private var combiningAccent = 0
     private var secondaryMouseButton = 0
 
-    private val accessibilityManager = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager
+    private val accessibilityManager = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
     private var accessibilityTextPending = false
     private val accessibilityTextRunnable = Runnable {
         accessibilityTextPending = false
-        if (accessibilityManager?.isEnabled == true) {
+        if (accessibilityManager.isEnabled) {
             session?.withTerminal { handle ->
                 contentDescription = GhosttyVt.nativeViewportText(handle)?.toString(Charsets.UTF_8)
             }
@@ -289,8 +287,8 @@ public class GhosttyTerminalView @JvmOverloads constructor(
                 if (handled) return true
                 requestFocus()
                 if (showImeOnTap) {
-                    (context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager)
-                        ?.showSoftInput(this@GhosttyTerminalView, 0)
+                    (context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
+                        .showSoftInput(this@GhosttyTerminalView, 0)
                 }
                 return true
             }
@@ -437,16 +435,8 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         baseline = -textPaint.fontMetrics.ascent
     }
 
-    internal fun onSessionOutput() {
-        scheduleFrame()
-    }
-
     internal fun onSessionBell() {
         if (bellHapticEnabled) performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-    }
-
-    internal fun onSessionUpdated() {
-        scheduleFrame()
     }
 
     private fun sendMouseReport(handle: Long, action: Int, button: Int, col: Int, row: Int) {
@@ -607,7 +597,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         }
     }
 
-    private fun scheduleFrame() {
+    internal fun scheduleFrame() {
         if (framePending || !isAttachedToWindow) return
         framePending = true
         Choreographer.getInstance().postFrameCallback(frameCallback)
@@ -663,7 +653,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         syncSelectionUi()
         invalidate()
 
-        if (accessibilityManager?.isEnabled == true && !accessibilityTextPending) {
+        if (accessibilityManager.isEnabled && !accessibilityTextPending) {
             accessibilityTextPending = true
             postDelayed(accessibilityTextRunnable, ACCESSIBILITY_TEXT_DELAY_MS)
         }
@@ -964,7 +954,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
 
     private fun copySelection() {
         val bytes = session?.withTerminal { GhosttyVt.nativeSelectionText(it) } ?: return
-        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         clipboard.setPrimaryClip(ClipData.newPlainText(null, String(bytes, Charsets.UTF_8)))
         clearSelection()
     }
@@ -972,9 +962,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
     public fun pasteFromClipboard() {
         val activeSession = session ?: return
         if (!activeSession.terminalAlive) return
-        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
-        val clip = clipboard.primaryClip?.takeIf { it.itemCount > 0 } ?: return
-        val text = clip.getItemAt(0).coerceToText(context)?.toString()
+        val text = activeSession.readClipboardText()
         if (text.isNullOrEmpty()) return
         val bytes = text.toByteArray(Charsets.UTF_8)
         if (GhosttyVt.nativeIsPasteSafe(bytes)) {
@@ -1682,8 +1670,8 @@ public class GhosttyTerminalView @JvmOverloads constructor(
                 }
             },
             copyUrl = {
-                (context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager)
-                    ?.setPrimaryClip(ClipData.newPlainText(null, url))
+                (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
+                    .setPrimaryClip(ClipData.newPlainText(null, url))
             },
         )
     }
