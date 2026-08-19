@@ -1,0 +1,97 @@
+diff --git a/include/ghostty/vt/render.h b/include/ghostty/vt/render.h
+index f6b5e22..7a90b46 100644
+--- a/include/ghostty/vt/render.h
++++ b/include/ghostty/vt/render.h
+@@ -494,6 +494,28 @@ GHOSTTY_API GhosttyResult ghostty_render_state_end_update(GhosttyRenderState sta
+  */
+ GHOSTTY_API GhosttyResult ghostty_render_state_clean(GhosttyRenderState state);
+ 
++/**
++ * Resolve the OSC 8 hyperlink URI at a viewport coordinate.
++ *
++ * The render state must be freshly updated via ghostty_render_state_update()
++ * with no terminal mutation in between. The returned string borrows page
++ * memory and is valid only until the next mutating terminal call.
++ *
++ * Returns GHOSTTY_NO_VALUE when the coordinate is out of range or carries
++ * no hyperlink.
++ *
++ * @param state The render state handle
++ * @param x Viewport column (0-indexed)
++ * @param y Viewport row (0-indexed)
++ * @param[out] out_uri Borrowed URI bytes (not null-terminated)
++ * @return GHOSTTY_SUCCESS when a hyperlink was found
++ */
++GHOSTTY_API GhosttyResult ghostty_render_state_link_uri_at(
++    GhosttyRenderState state,
++    uint16_t x,
++    uint32_t y,
++    GhosttyString* out_uri);
++
+ /**
+  * Get a value from a render state.
+  *
+diff --git a/src/lib_vt.zig b/src/lib_vt.zig
+index f26f7d8..35c4c6a 100644
+--- a/src/lib_vt.zig
++++ b/src/lib_vt.zig
+@@ -284,6 +284,7 @@ comptime {
+             @export(&c.render_state_begin_update, .{ .name = "ghostty_render_state_begin_update" });
+             @export(&c.render_state_end_update, .{ .name = "ghostty_render_state_end_update" });
+             @export(&c.render_state_clean, .{ .name = "ghostty_render_state_clean" });
++            @export(&c.render_state_link_uri_at, .{ .name = "ghostty_render_state_link_uri_at" });
+             @export(&c.render_state_get, .{ .name = "ghostty_render_state_get" });
+             @export(&c.render_state_get_multi, .{ .name = "ghostty_render_state_get_multi" });
+             @export(&c.render_state_set, .{ .name = "ghostty_render_state_set" });
+diff --git a/src/terminal/c/main.zig b/src/terminal/c/main.zig
+index 76e341c..92e11a7 100644
+--- a/src/terminal/c/main.zig
++++ b/src/terminal/c/main.zig
+@@ -93,6 +93,7 @@ pub const render_state_update = render.update;
+ pub const render_state_begin_update = render.begin_update;
+ pub const render_state_end_update = render.end_update;
+ pub const render_state_clean = render.clean;
++pub const render_state_link_uri_at = render.link_uri_at;
+ pub const render_state_get = render.get;
+ pub const render_state_get_multi = render.get_multi;
+ pub const render_state_set = render.set;
+diff --git a/src/terminal/c/render.zig b/src/terminal/c/render.zig
+index c108456..684c7aa 100644
+--- a/src/terminal/c/render.zig
++++ b/src/terminal/c/render.zig
+@@ -249,6 +249,35 @@ pub fn clean(
+     return .success;
+ }
+ 
++/// Resolve the OSC 8 hyperlink URI at a viewport coordinate of the render
++/// state. The render state must be freshly updated: the returned string
++/// borrows page memory and is valid only until the next mutating terminal
++/// call.
++pub fn link_uri_at(
++    state_: RenderState,
++    x: u16,
++    y: u32,
++    out_: ?*lib.String,
++) callconv(lib.calling_conv) Result {
++    const wrapper = state_ orelse return .invalid_value;
++    const out = out_ orelse return .invalid_value;
++    const state = &wrapper.state;
++
++    const row_slice = state.row_data.slice();
++    const row_pins = row_slice.items(.pin);
++    if (x >= state.cols or y >= row_pins.len) return .no_value;
++
++    const link_pin = row_pins[y];
++    const link_page: *page.Page = link_pin.node.page();
++    const rac = link_page.getRowAndCell(x, link_pin.y);
++    if (!rac.cell.hyperlink) return .no_value;
++    const link_id = link_page.lookupHyperlink(rac.cell) orelse return .no_value;
++    const link = link_page.hyperlink_set.get(link_page.memory, link_id);
++    const uri = link.uri.offset.ptr(link_page.memory)[0..link.uri.len];
++    out.* = .{ .ptr = uri.ptr, .len = uri.len };
++    return .success;
++}
++
+ pub fn get(
+     state_: RenderState,
+     data: Data,

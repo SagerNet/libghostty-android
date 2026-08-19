@@ -1,0 +1,36 @@
+diff --git a/src/lib/TinyIo.zig b/src/lib/TinyIo.zig
+index f892780..9c1ef93 100644
+--- a/src/lib/TinyIo.zig
++++ b/src/lib/TinyIo.zig
+@@ -439,9 +439,17 @@ fn operate(
+     }
+ }
+ 
++// 32-bit Linux without libc has no 64-bit lseek syscall; use _llseek,
++// same as `std.Io.Threaded`.
++const use_llseek = builtin.os.tag == .linux and !builtin.link_libc and @sizeOf(usize) == 4;
++
+ fn fileSeekBy(_: ?*anyopaque, file: File, offset: i64) File.SeekError!void {
+     while (true) {
+-        const rc = lseek_sym(file.handle, offset, posix.SEEK.CUR);
++        var llseek_result: u64 = undefined;
++        const rc = if (use_llseek)
++            posix.system.llseek(file.handle, @bitCast(offset), &llseek_result, posix.SEEK.CUR)
++        else
++            lseek_sym(file.handle, offset, posix.SEEK.CUR);
+         switch (posix.errno(rc)) {
+             .SUCCESS => return,
+             .INTR => continue,
+@@ -456,7 +464,11 @@ fn fileSeekBy(_: ?*anyopaque, file: File, offset: i64) File.SeekError!void {
+ 
+ fn fileSeekTo(_: ?*anyopaque, file: File, offset: u64) File.SeekError!void {
+     while (true) {
+-        const rc = lseek_sym(file.handle, @bitCast(offset), posix.SEEK.SET);
++        var llseek_result: u64 = undefined;
++        const rc = if (use_llseek)
++            posix.system.llseek(file.handle, offset, &llseek_result, posix.SEEK.SET)
++        else
++            lseek_sym(file.handle, @bitCast(offset), posix.SEEK.SET);
+         switch (posix.errno(rc)) {
+             .SUCCESS => return,
+             .INTR => continue,

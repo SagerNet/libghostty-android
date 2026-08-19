@@ -1,0 +1,353 @@
+diff --git a/include/ghostty/vt/kitty_graphics.h b/include/ghostty/vt/kitty_graphics.h
+index 22f6ac8..ee5f7bd 100644
+--- a/include/ghostty/vt/kitty_graphics.h
++++ b/include/ghostty/vt/kitty_graphics.h
+@@ -480,6 +480,50 @@ typedef struct {
+   uint32_t source_height;
+ } GhosttyKittyGraphicsPlacementRenderInfo;
+ 
++/**
++ * Rendering geometry for a virtual (unicode placeholder) placement run.
++ *
++ * Produced by ghostty_kitty_graphics_virtual_placement_render_info() for
++ * the run the iterator is positioned on. The viewport position addresses
++ * the run's first placeholder cell; the offsets are pixels from that
++ * cell's top-left corner. Source and destination rectangles follow the
++ * same convention as GhosttyKittyGraphicsPlacementRenderInfo.
++ *
++ * This struct uses the sized-struct ABI pattern. Initialize with
++ * GHOSTTY_INIT_SIZED(GhosttyKittyGraphicsVirtualRenderInfo) before calling
++ * ghostty_kitty_graphics_virtual_placement_render_info().
++ *
++ * @ingroup kitty_graphics
++ */
++typedef struct {
++  /** Size of this struct in bytes. Must be set to sizeof(GhosttyKittyGraphicsVirtualRenderInfo). */
++  size_t size;
++  /** Image ID encoded in the placeholder cells. */
++  uint32_t image_id;
++  /** Placement ID encoded in the placeholder cells, or 0. */
++  uint32_t placement_id;
++  /** Viewport-relative column of the run's first placeholder cell. */
++  int32_t viewport_col;
++  /** Viewport-relative row of the run's first placeholder cell. */
++  int32_t viewport_row;
++  /** Horizontal pixel offset from the origin cell's top-left corner. */
++  uint32_t offset_x;
++  /** Vertical pixel offset from the origin cell's top-left corner. */
++  uint32_t offset_y;
++  /** Destination width in pixels. */
++  uint32_t dest_width;
++  /** Destination height in pixels. */
++  uint32_t dest_height;
++  /** Source rectangle x origin in pixels. */
++  uint32_t source_x;
++  /** Source rectangle y origin in pixels. */
++  uint32_t source_y;
++  /** Source rectangle width in pixels. */
++  uint32_t source_width;
++  /** Source rectangle height in pixels. */
++  uint32_t source_height;
++} GhosttyKittyGraphicsVirtualRenderInfo;
++
+ /**
+  * Get data from a kitty graphics storage instance.
+  *
+@@ -856,6 +900,79 @@ GHOSTTY_API GhosttyResult ghostty_kitty_graphics_placement_render_info(
+     GhosttyTerminal terminal,
+     GhosttyKittyGraphicsPlacementRenderInfo* out_info);
+ 
++/**
++ * Create a virtual (unicode placeholder) placement iterator.
++ *
++ * The iterator visits the placeholder runs within the terminal's viewport
++ * after ghostty_kitty_graphics_virtual_placement_iterator_begin().
++ *
++ * @param allocator Pointer to allocator, or NULL to use the default allocator
++ * @param[out] out_iterator On success, receives the created iterator handle
++ * @return GHOSTTY_SUCCESS on success, GHOSTTY_OUT_OF_MEMORY on allocation
++ *         failure
++ *
++ * @ingroup kitty_graphics
++ */
++GHOSTTY_API GhosttyResult ghostty_kitty_graphics_virtual_placement_iterator_new(
++    const GhosttyAllocator* allocator,
++    GhosttyKittyGraphicsVirtualPlacementIterator* out_iterator);
++
++/**
++ * Free a virtual placement iterator.
++ *
++ * @param iterator The iterator handle to free (may be NULL)
++ *
++ * @ingroup kitty_graphics
++ */
++GHOSTTY_API void ghostty_kitty_graphics_virtual_placement_iterator_free(
++    GhosttyKittyGraphicsVirtualPlacementIterator iterator);
++
++/**
++ * Reset a virtual placement iterator to the terminal's current viewport.
++ *
++ * The iterator borrows terminal state and is invalidated by any mutating
++ * terminal call; begin again before re-iterating.
++ *
++ * @param terminal The terminal handle
++ * @param iterator The iterator handle
++ * @return GHOSTTY_SUCCESS on success
++ *
++ * @ingroup kitty_graphics
++ */
++GHOSTTY_API GhosttyResult ghostty_kitty_graphics_virtual_placement_iterator_begin(
++    GhosttyTerminal terminal,
++    GhosttyKittyGraphicsVirtualPlacementIterator iterator);
++
++/**
++ * Advance a virtual placement iterator to the next placeholder run.
++ *
++ * @param iterator The iterator handle
++ * @return true when positioned on a run, false when iteration is complete
++ *
++ * @ingroup kitty_graphics
++ */
++GHOSTTY_API bool ghostty_kitty_graphics_virtual_placement_iterator_next(
++    GhosttyKittyGraphicsVirtualPlacementIterator iterator);
++
++/**
++ * Get rendering geometry for the current virtual placement run.
++ *
++ * Returns GHOSTTY_NO_VALUE when the run's image is not stored (yet), the
++ * terminal has no pixel size, or the run resolves to an empty rectangle;
++ * skip the run in that case.
++ *
++ * @param iterator The iterator positioned on a placeholder run
++ * @param terminal The terminal handle
++ * @param[out] out_info Pointer to receive the rendering geometry
++ * @return GHOSTTY_SUCCESS on success
++ *
++ * @ingroup kitty_graphics
++ */
++GHOSTTY_API GhosttyResult ghostty_kitty_graphics_virtual_placement_render_info(
++    GhosttyKittyGraphicsVirtualPlacementIterator iterator,
++    GhosttyTerminal terminal,
++    GhosttyKittyGraphicsVirtualRenderInfo* out_info);
++
+ /** @} */
+ 
+ #ifdef __cplusplus
+diff --git a/include/ghostty/vt/types.h b/include/ghostty/vt/types.h
+index 87856ed..2fb93ac 100644
+--- a/include/ghostty/vt/types.h
++++ b/include/ghostty/vt/types.h
+@@ -161,6 +161,14 @@ typedef const struct GhosttyKittyGraphicsImageImpl* GhosttyKittyGraphicsImage;
+  */
+ typedef struct GhosttyKittyGraphicsPlacementIteratorImpl* GhosttyKittyGraphicsPlacementIterator;
+ 
++/**
++ * Opaque handle to a Kitty graphics virtual (unicode placeholder)
++ * placement iterator.
++ *
++ * @ingroup kitty_graphics
++ */
++typedef struct GhosttyKittyGraphicsVirtualPlacementIteratorImpl* GhosttyKittyGraphicsVirtualPlacementIterator;
++
+ /**
+  * Opaque handle to a render state instance.
+  *
+diff --git a/src/lib_vt.zig b/src/lib_vt.zig
+index 28722f0..f26f7d8 100644
+--- a/src/lib_vt.zig
++++ b/src/lib_vt.zig
+@@ -378,6 +378,11 @@ comptime {
+             @export(&c.kitty_graphics_placement_viewport_pos, .{ .name = "ghostty_kitty_graphics_placement_viewport_pos" });
+             @export(&c.kitty_graphics_placement_source_rect, .{ .name = "ghostty_kitty_graphics_placement_source_rect" });
+             @export(&c.kitty_graphics_placement_render_info, .{ .name = "ghostty_kitty_graphics_placement_render_info" });
++            @export(&c.kitty_graphics_virtual_placement_iterator_new, .{ .name = "ghostty_kitty_graphics_virtual_placement_iterator_new" });
++            @export(&c.kitty_graphics_virtual_placement_iterator_free, .{ .name = "ghostty_kitty_graphics_virtual_placement_iterator_free" });
++            @export(&c.kitty_graphics_virtual_placement_iterator_begin, .{ .name = "ghostty_kitty_graphics_virtual_placement_iterator_begin" });
++            @export(&c.kitty_graphics_virtual_placement_iterator_next, .{ .name = "ghostty_kitty_graphics_virtual_placement_iterator_next" });
++            @export(&c.kitty_graphics_virtual_placement_render_info, .{ .name = "ghostty_kitty_graphics_virtual_placement_render_info" });
+         }
+         if (features.grid_introspection) {
+             @export(&c.grid_ref_cell, .{ .name = "ghostty_grid_ref_cell" });
+diff --git a/src/terminal/c/kitty_graphics.zig b/src/terminal/c/kitty_graphics.zig
+index e27dd5d..da14bb7 100644
+--- a/src/terminal/c/kitty_graphics.zig
++++ b/src/terminal/c/kitty_graphics.zig
+@@ -5,6 +5,7 @@ const lib = @import("../lib.zig");
+ const CAllocator = lib.alloc.Allocator;
+ const kitty_storage = @import("../kitty/graphics_storage.zig");
+ const kitty_cmd = @import("../kitty/graphics_command.zig");
++const kitty_unicode = @import("../kitty/graphics_unicode.zig");
+ const Image = @import("../kitty/graphics_image.zig").Image;
+ const grid_ref = @import("grid_ref.zig");
+ const selection_c = @import("selection.zig");
+@@ -638,6 +639,154 @@ fn computeViewportPos(
+     return .{ .col = vp_col, .row = vp_row, .visible = visible };
+ }
+ 
++/// C: GhosttyKittyGraphicsVirtualPlacementIterator
++pub const VirtualPlacementIterator = if (build_options.kitty_graphics)
++    ?*VirtualPlacementIteratorWrapper
++else
++    ?*anyopaque;
++
++const VirtualPlacementIteratorWrapper = if (build_options.kitty_graphics)
++    struct {
++        alloc: std.mem.Allocator,
++        inner: ?kitty_unicode.PlacementIterator = null,
++        current: ?kitty_unicode.Placement = null,
++    }
++else
++    void;
++
++/// C: GhosttyKittyGraphicsVirtualRenderInfo
++pub const VirtualRenderInfo = extern struct {
++    size: usize = @sizeOf(VirtualRenderInfo),
++    image_id: u32 = 0,
++    placement_id: u32 = 0,
++    viewport_col: i32 = 0,
++    viewport_row: i32 = 0,
++    offset_x: u32 = 0,
++    offset_y: u32 = 0,
++    dest_width: u32 = 0,
++    dest_height: u32 = 0,
++    source_x: u32 = 0,
++    source_y: u32 = 0,
++    source_width: u32 = 0,
++    source_height: u32 = 0,
++};
++
++pub fn virtual_placement_iterator_new(
++    alloc_: ?*const CAllocator,
++    out: *VirtualPlacementIterator,
++) callconv(lib.calling_conv) Result {
++    if (comptime !build_options.kitty_graphics) {
++        out.* = null;
++        return .no_value;
++    }
++    const alloc = lib.alloc.default(alloc_);
++    const ptr = alloc.create(VirtualPlacementIteratorWrapper) catch {
++        out.* = null;
++        return .out_of_memory;
++    };
++    ptr.* = .{ .alloc = alloc };
++    out.* = ptr;
++    return .success;
++}
++
++pub fn virtual_placement_iterator_free(
++    iter_: VirtualPlacementIterator,
++) callconv(lib.calling_conv) void {
++    if (comptime !build_options.kitty_graphics) return;
++    const iter = iter_ orelse return;
++    iter.alloc.destroy(iter);
++}
++
++/// Reset the iterator to walk the unicode placeholder (virtual placement)
++/// runs within the terminal's current viewport.
++pub fn virtual_placement_iterator_begin(
++    terminal_: terminal_c.Terminal,
++    iter_: VirtualPlacementIterator,
++) callconv(lib.calling_conv) Result {
++    if (comptime !build_options.kitty_graphics) return .no_value;
++    const wrapper = terminal_ orelse return .invalid_value;
++    const iter = iter_ orelse return .invalid_value;
++    iter.current = null;
++    const t = wrapper.terminal;
++    const pages = &t.screens.active.pages;
++    const bottom_right = pages.getBottomRight(.viewport) orelse {
++        iter.inner = null;
++        return .success;
++    };
++    iter.inner = kitty_unicode.placementIterator(
++        pages.getTopLeft(.viewport),
++        bottom_right,
++    );
++    return .success;
++}
++
++pub fn virtual_placement_iterator_next(
++    iter_: VirtualPlacementIterator,
++) callconv(lib.calling_conv) bool {
++    if (comptime !build_options.kitty_graphics) return false;
++    const iter = iter_ orelse return false;
++    if (iter.inner) |*inner| {
++        iter.current = inner.next();
++        if (iter.current != null) return true;
++        iter.inner = null;
++    }
++    return false;
++}
++
++/// Resolve the current virtual placement run into render geometry. The
++/// viewport position addresses the run's first placeholder cell; source and
++/// destination rectangles follow the same convention as
++/// ghostty_kitty_graphics_placement_render_info.
++pub fn virtual_placement_render_info(
++    iter_: VirtualPlacementIterator,
++    terminal_: terminal_c.Terminal,
++    out_: ?*VirtualRenderInfo,
++) callconv(lib.calling_conv) Result {
++    if (comptime !build_options.kitty_graphics) return .no_value;
++    const wrapper = terminal_ orelse return .invalid_value;
++    const iter = iter_ orelse return .invalid_value;
++    const out = out_ orelse return .invalid_value;
++    if (out.size < @sizeOf(VirtualRenderInfo)) return .invalid_value;
++    const p = if (iter.current) |*current| current else return .invalid_value;
++
++    const t = wrapper.terminal;
++    const storage = &t.screens.active.kitty_images;
++    const image = storage.imageById(p.image_id) orelse return .no_value;
++    if (t.cols == 0 or t.rows == 0) return .no_value;
++    const cell_width: u32 = t.width_px / @as(u32, @intCast(t.cols));
++    const cell_height: u32 = t.height_px / @as(u32, @intCast(t.rows));
++    if (cell_width == 0 or cell_height == 0) return .no_value;
++
++    const rp = p.renderPlacement(storage, &image, cell_width, cell_height) catch
++        return .no_value;
++    if (rp.dest_width == 0 or rp.dest_height == 0 or
++        rp.source_width == 0 or rp.source_height == 0)
++    {
++        return .no_value;
++    }
++
++    const pages = &t.screens.active.pages;
++    const pin_screen = pages.pointFromPin(.screen, rp.top_left) orelse
++        return .no_value;
++    const vp_screen = pages.pointFromPin(.screen, pages.getTopLeft(.viewport)) orelse
++        return .no_value;
++
++    out.image_id = p.image_id;
++    out.placement_id = p.placement_id;
++    out.viewport_col = @intCast(pin_screen.screen.x);
++    out.viewport_row = @as(i32, @intCast(pin_screen.screen.y)) -
++        @as(i32, @intCast(vp_screen.screen.y));
++    out.offset_x = rp.offset_x;
++    out.offset_y = rp.offset_y;
++    out.dest_width = rp.dest_width;
++    out.dest_height = rp.dest_height;
++    out.source_x = rp.source_x;
++    out.source_y = rp.source_y;
++    out.source_width = rp.source_width;
++    out.source_height = rp.source_height;
++    return .success;
++}
++
+ test "placement_iterator new/free" {
+     if (comptime !build_options.kitty_graphics) return error.SkipZigTest;
+ 
+diff --git a/src/terminal/c/main.zig b/src/terminal/c/main.zig
+index 9189822..76e341c 100644
+--- a/src/terminal/c/main.zig
++++ b/src/terminal/c/main.zig
+@@ -28,6 +28,11 @@ pub const kitty_graphics_placement_grid_size = kitty_graphics.placement_grid_siz
+ pub const kitty_graphics_placement_viewport_pos = kitty_graphics.placement_viewport_pos;
+ pub const kitty_graphics_placement_source_rect = kitty_graphics.placement_source_rect;
+ pub const kitty_graphics_placement_render_info = kitty_graphics.placement_render_info;
++pub const kitty_graphics_virtual_placement_iterator_new = kitty_graphics.virtual_placement_iterator_new;
++pub const kitty_graphics_virtual_placement_iterator_free = kitty_graphics.virtual_placement_iterator_free;
++pub const kitty_graphics_virtual_placement_iterator_begin = kitty_graphics.virtual_placement_iterator_begin;
++pub const kitty_graphics_virtual_placement_iterator_next = kitty_graphics.virtual_placement_iterator_next;
++pub const kitty_graphics_virtual_placement_render_info = kitty_graphics.virtual_placement_render_info;
+ pub const types = @import("types.zig");
+ pub const modes = @import("modes.zig");
+ pub const osc = @import("osc.zig");

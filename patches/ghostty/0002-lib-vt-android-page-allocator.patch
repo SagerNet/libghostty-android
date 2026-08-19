@@ -1,0 +1,15 @@
+diff --git a/src/lib/allocator.zig b/src/lib/allocator.zig
+index 375a09e..3136a65 100644
+--- a/src/lib/allocator.zig
++++ b/src/lib/allocator.zig
+@@ -34,6 +34,10 @@ pub fn default(c_alloc_: ?*const Allocator) std.mem.Allocator {
+     // Wasm
+     if (comptime builtin.target.cpu.arch.isWasm()) return std.heap.wasm_allocator;
+ 
++    // Android: the SMP allocator's threadlocal state needs ELF TLS
++    // (__tls_get_addr), which bionic only exports from API 29.
++    if (comptime builtin.target.abi.isAndroid()) return std.heap.page_allocator;
++
+     // No libc, use the preferred allocator for releases which is the
+     // Zig SMP allocator.
+     return std.heap.smp_allocator;

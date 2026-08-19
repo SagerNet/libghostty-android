@@ -1,0 +1,195 @@
+diff --git a/include/ghostty/vt/terminal.h b/include/ghostty/vt/terminal.h
+index 57d0e5d..ee12e67 100644
+--- a/include/ghostty/vt/terminal.h
++++ b/include/ghostty/vt/terminal.h
+@@ -96,6 +96,7 @@ extern "C" {
+  * | `GHOSTTY_TERMINAL_OPT_COLOR_SCHEME`     | `GhosttyTerminalColorSchemeFn`    | Color scheme query (CSI ? 996 n)          |
+  * | `GHOSTTY_TERMINAL_OPT_DEVICE_ATTRIBUTES`| `GhosttyTerminalDeviceAttributesFn`| Device attributes query (CSI c / > c / = c)|
+  * | `GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE`  | `GhosttyTerminalClipboardWriteFn` | Clipboard write via OSC 52 / OSC 1337     |
++ * | `GHOSTTY_TERMINAL_OPT_CLIPBOARD_READ`   | `GhosttyTerminalClipboardReadFn`  | Clipboard read request via OSC 52 "?"     |
+  * | `GHOSTTY_TERMINAL_OPT_DESKTOP_NOTIFICATION`| `GhosttyTerminalDesktopNotificationFn` | Desktop notification via OSC 9 / OSC 777 |
+  * | `GHOSTTY_TERMINAL_OPT_PROGRESS_REPORT`  | `GhosttyTerminalProgressReportFn` | Progress report via OSC 9;4               |
+  * | `GHOSTTY_TERMINAL_OPT_UNKNOWN_SEQUENCE` | `GhosttyTerminalUnknownSequenceFn` | Unsupported sequence identifier          |
+@@ -522,8 +523,8 @@ typedef enum GHOSTTY_ENUM_TYPED {
+  * details such as OSC 52 selectors, base64 encoding, multipart chunks,
+  * aliases, and terminators are normalized before this callback is invoked.
+  * OSC 52 and iTerm2 OSC 1337 Copy writes therefore use the same callback
+- * shape. OSC 52 clipboard read requests ("?") are always ignored and never
+- * forwarded to this callback.
++ * shape. OSC 52 clipboard read requests ("?") are delivered to
++ * GhosttyTerminalClipboardReadFn instead and never reach this callback.
+  *
+  * @param terminal The terminal handle
+  * @param userdata The userdata pointer set via GHOSTTY_TERMINAL_OPT_USERDATA
+@@ -537,6 +538,26 @@ typedef GhosttyClipboardWriteResult (*GhosttyTerminalClipboardWriteFn)(
+     void* userdata,
+     const GhosttyClipboardWrite* write);
+ 
++/**
++ * Callback function type for clipboard read requests.
++ *
++ * Called when the running program requests the clipboard contents (OSC 52
++ * with a "?" payload). The terminal sends no response on its own: answering
++ * lets the program read the user's clipboard, so the host must mediate the
++ * request with user consent and, when granted, compose and send the OSC 52
++ * response itself.
++ *
++ * @param terminal The terminal handle
++ * @param userdata The userdata pointer set via GHOSTTY_TERMINAL_OPT_USERDATA
++ * @param location The clipboard the program asked to read
++ *
++ * @ingroup terminal
++ */
++typedef void (*GhosttyTerminalClipboardReadFn)(
++    GhosttyTerminal terminal,
++    void* userdata,
++    GhosttyClipboardLocation location);
++
+ /**
+  * A request to show a desktop notification.
+  *
+@@ -1227,6 +1248,14 @@ typedef enum GHOSTTY_ENUM_TYPED {
+    * Input type: GhosttyString*
+    */
+   GHOSTTY_TERMINAL_OPT_TERMINFO_NAME = 37,
++
++  /**
++   * Set the callback invoked for OSC 52 clipboard read requests. Set to
++   * NULL to ignore read requests.
++   *
++   * Input type: GhosttyTerminalClipboardReadFn
++   */
++  GHOSTTY_TERMINAL_OPT_CLIPBOARD_READ = 38,
+   GHOSTTY_TERMINAL_OPT_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
+ } GhosttyTerminalOption;
+ 
+diff --git a/src/terminal/c/terminal.zig b/src/terminal/c/terminal.zig
+index 55d4881..dd204a9 100644
+--- a/src/terminal/c/terminal.zig
++++ b/src/terminal/c/terminal.zig
+@@ -220,6 +220,7 @@ const Effects = struct {
+     progress_report: ?ProgressReportFn = null,
+     size_cb: ?SizeFn = null,
+     clipboard_write: ?ClipboardWriteFn = null,
++    clipboard_read: ?ClipboardReadFn = null,
+     unknown_sequence: ?UnknownSequenceFn = null,
+ 
+     /// Scratch buffer for DA1 feature codes. The device attributes
+@@ -255,6 +256,10 @@ const Effects = struct {
+     /// and its contents are borrowed and only valid for the callback duration.
+     pub const ClipboardWriteFn = *const fn (Terminal, ?*anyopaque, *const ClipboardWrite) callconv(lib.calling_conv) clipboard.WriteResult;
+ 
++    /// C function pointer type for the clipboard_read callback. The terminal
++    /// sends no response on its own; the host composes the OSC 52 response.
++    pub const ClipboardReadFn = *const fn (Terminal, ?*anyopaque, clipboard.Location) callconv(lib.calling_conv) void;
++
+     /// C function pointer type for the desktop_notification callback. The
+     /// request and its strings are borrowed for the callback duration.
+     pub const DesktopNotificationFn = *const fn (Terminal, ?*anyopaque, *const DesktopNotification) callconv(lib.calling_conv) void;
+@@ -355,6 +360,12 @@ const Effects = struct {
+         return func(@ptrCast(wrapper), wrapper.effects.userdata, &request);
+     }
+ 
++    fn clipboardReadTrampoline(handler: *Handler, location: clipboard.Location) void {
++        const wrapper = TerminalWrapper.fromHandler(handler);
++        const func = wrapper.effects.clipboard_read orelse return;
++        func(@ptrCast(wrapper), wrapper.effects.userdata, location);
++    }
++
+     fn desktopNotificationTrampoline(
+         handler: *Handler,
+         notification: Action.ShowDesktopNotification,
+@@ -524,6 +535,7 @@ fn wrap(
+         .progress_report = &Effects.progressReportTrampoline,
+         .size = &Effects.sizeTrampoline,
+         .clipboard_write = &Effects.clipboardWriteTrampoline,
++        .clipboard_read = &Effects.clipboardReadTrampoline,
+     };
+ 
+     wrapper.* = .{
+@@ -1002,6 +1014,7 @@ pub const Option = enum(c_int) {
+     unknown_sequence = 35,
+     unknown_max_bytes = 36,
+     terminfo_name = 37,
++    clipboard_read = 38,
+ 
+     /// Input type expected for setting the option.
+     pub fn InType(comptime self: Option) type {
+@@ -1019,6 +1032,7 @@ pub const Option = enum(c_int) {
+             .progress_report => ?Effects.ProgressReportFn,
+             .size_cb => ?Effects.SizeFn,
+             .clipboard_write => ?Effects.ClipboardWriteFn,
++            .clipboard_read => ?Effects.ClipboardReadFn,
+             .unknown_sequence => ?Effects.UnknownSequenceFn,
+             .title, .pwd, .terminfo_name => ?*const lib.String,
+             .color_foreground, .color_background, .color_cursor => ?*const color.RGB.C,
+@@ -1087,6 +1101,7 @@ fn setTyped(
+         .progress_report => wrapper.effects.progress_report = value,
+         .size_cb => wrapper.effects.size_cb = value,
+         .clipboard_write => wrapper.effects.clipboard_write = value,
++        .clipboard_read => wrapper.effects.clipboard_read = value,
+         .unknown_sequence => {
+             wrapper.effects.unknown_sequence = value;
+             wrapper.stream.handler.unknown_sequence = if (value != null)
+diff --git a/src/terminal/stream_terminal.zig b/src/terminal/stream_terminal.zig
+index 91ad59b..77bb2cb 100644
+--- a/src/terminal/stream_terminal.zig
++++ b/src/terminal/stream_terminal.zig
+@@ -144,12 +144,18 @@ pub const Handler = struct {
+         /// A write with no contents clears the destination. A content entry
+         /// with empty data is a distinct empty representation.
+         ///
+-        /// Clipboard read requests (OSC 52 with a "?" payload) are never
+-        /// forwarded: answering one would let any program running in the
+-        /// terminal silently read the user's clipboard, and a VT state
+-        /// library has no way to mediate that with user consent.
++        /// Clipboard read requests (OSC 52 with a "?" payload) go to
++        /// clipboard_read instead: answering one lets any program running
++        /// in the terminal read the user's clipboard, so the host must
++        /// mediate it with user consent.
+         clipboard_write: ?*const fn (*Handler, clipboard.Write) clipboard.WriteResult,
+ 
++        /// Called when the running program requests the clipboard contents
++        /// (OSC 52 with a "?" payload). The terminal sends no response on
++        /// its own: the host decides whether to answer (typically after
++        /// user confirmation) and composes the OSC 52 response itself.
++        clipboard_read: ?*const fn (*Handler, clipboard.Location) void,
++
+         /// Called in response to an XTVERSION query. Returns the version
+         /// string to report (e.g. "ghostty 1.2.3"). The returned memory
+         /// must be valid for the lifetime of the call. The maximum length
+@@ -162,6 +168,7 @@ pub const Handler = struct {
+         pub const readonly: Effects = .{
+             .bell = null,
+             .clipboard_write = null,
++            .clipboard_read = null,
+             .color_scheme = null,
+             .desktop_notification = null,
+             .device_attributes = null,
+@@ -500,17 +507,21 @@ pub const Handler = struct {
+     }
+ 
+     fn clipboardContents(self: *Handler, kind: u8, data: []const u8) !void {
+-        const func = self.effects.clipboard_write orelse return;
+-
+-        // Read requests are deliberately not forwarded; see the effect docs.
+-        if (data.len == 1 and data[0] == '?') return;
+-
+         const location: clipboard.Location = switch (kind) {
+             's' => .selection,
+             'p' => .primary,
+             else => .standard,
+         };
+ 
++        // Read requests go to the dedicated effect; the terminal never
++        // answers them on its own. See the clipboard_read effect docs.
++        if (data.len == 1 and data[0] == '?') {
++            if (self.effects.clipboard_read) |read_func| read_func(self, location);
++            return;
++        }
++
++        const func = self.effects.clipboard_write orelse return;
++
+         // OSC 52 uses an empty payload to clear the selected clipboard.
+         if (data.len == 0) {
+             _ = func(self, .{
