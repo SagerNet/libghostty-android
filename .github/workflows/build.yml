@@ -35,6 +35,19 @@ jobs:
         with:
           name: library-release
           path: library*/build/outputs/aar/*-release.aar
+      - name: Publish snapshot to Maven Central
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          version=$(grep '^VERSION_NAME=' gradle.properties | cut -d= -f2)
+          case "$version" in
+            *-SNAPSHOT) ./gradlew publishToMavenCentral ;;
+            *) echo "VERSION_NAME=$version is not a SNAPSHOT, skipping" ;;
+          esac
+        env:
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_KEY_PASSWORD }}
 
   test:
     runs-on: ubuntu-latest

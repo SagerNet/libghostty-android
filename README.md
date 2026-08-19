@@ -4,12 +4,16 @@ Android bindings for [libghostty-vt](https://github.com/ghostty-org/ghostty/tree
 with a terminal view, session management, theme catalog, and font handling.
 
 ```kotlin
+repositories {
+    maven("https://central.sonatype.com/repository/maven-snapshots/")
+}
+
 dependencies {
-    implementation("io.github.sagernet:libghostty-android:0.1.0")
+    implementation("io.github.sagernet:libghostty-android:0.1.0-SNAPSHOT")
 
     // optional
-    implementation("io.github.sagernet:libghostty-android-extras:0.1.0")
-    implementation("io.github.sagernet:libghostty-android-compose:0.1.0")
+    implementation("io.github.sagernet:libghostty-android-extras:0.1.0-SNAPSHOT")
+    implementation("io.github.sagernet:libghostty-android-compose:0.1.0-SNAPSHOT")
 }
 ```
 
