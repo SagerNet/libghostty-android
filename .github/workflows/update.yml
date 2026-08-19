@@ -1,0 +1,78 @@
+name: Update ghostty
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      ghostty_ref:
+        description: "ghostty commit to pin (default: upstream main HEAD)"
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  ZIG_VERSION: 0.16.0
+  NDK_VERSION: 28.0.13004108
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Resolve upstream commit
+        id: upstream
+        run: |
+          if [ -n "${{ inputs.ghostty_ref }}" ]; then
+            head="${{ inputs.ghostty_ref }}"
+          else
+            head=$(git ls-remote https://github.com/ghostty-org/ghostty.git refs/heads/main | cut -f1)
+          fi
+          current=$(cat GHOSTTY_REF)
+          echo "head=$head" >> "$GITHUB_OUTPUT"
+          echo "short=${head:0:9}" >> "$GITHUB_OUTPUT"
+          if [ "$head" = "$current" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Bump GHOSTTY_REF
+        if: steps.upstream.outputs.changed == 'true'
+        run: printf '%s\n' "${{ steps.upstream.outputs.head }}" > GHOSTTY_REF
+      - uses: actions/setup-java@v5
+        if: steps.upstream.outputs.changed == 'true'
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: mlugg/setup-zig@v2
+        if: steps.upstream.outputs.changed == 'true'
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Install NDK
+        if: steps.upstream.outputs.changed == 'true'
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" > /dev/null
+      - uses: gradle/actions/setup-gradle@v4
+        if: steps.upstream.outputs.changed == 'true'
+      - name: Build with new commit
+        if: steps.upstream.outputs.changed == 'true'
+        run: ./gradlew :library:assembleRelease
+      - name: Check patch assumptions
+        if: steps.upstream.outputs.changed == 'true'
+        run: scripts/check-patch-assumptions.sh build/ghostty/source
+      - name: Create pull request
+        if: steps.upstream.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: update-ghostty
+          commit-message: "Update ghostty to ${{ steps.upstream.outputs.short }}"
+          title: "Update ghostty to ${{ steps.upstream.outputs.short }}"
+          body: |
+            Bumps `GHOSTTY_REF` to [`${{ steps.upstream.outputs.short }}`](https://github.com/ghostty-org/ghostty/commit/${{ steps.upstream.outputs.head }}).
+
+            All six patches applied cleanly, the patch assumption check passed,
+            and `:library:assembleRelease` succeeded in this workflow run
+            (${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
+            The instrumented test suite runs on push to main after merge.
+          add-paths: GHOSTTY_REF
