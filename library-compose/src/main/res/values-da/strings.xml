@@ -1,0 +1,8 @@
+<resources>
+    <string name="ghostty_paste_unsafe_title">Vil du indsætte denne tekst?</string>
+    <string name="ghostty_paste_unsafe_message">Teksten i udklipsholderen indeholder linjeskift eller en escape-sekvens, der afslutter indsætningstilstanden. Shellen kører hver linje som en kommando.</string>
+    <string name="ghostty_open_link">Åbn link</string>
+    <string name="ghostty_clipboard_read_title">Tillad adgang til udklipsholderen?</string>
+    <string name="ghostty_clipboard_read_message">Det eksterne program anmoder om udklipsholderens indhold. Yderligere anmodninger i denne session besvares uden at spørge.</string>
+    <string name="ghostty_clipboard_read_allow">Tillad</string>
+</resources>

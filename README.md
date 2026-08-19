@@ -23,6 +23,22 @@ view.session = session
 session.feedOutput(processOutput)
 ```
 
+With Compose:
+
+```kotlin
+dependencies {
+    implementation("io.github.sagernet:libghostty-android-compose:0.1.0")
+}
+```
+
+```kotlin
+val dialogState = rememberTerminalDialogState()
+GhosttyTerminal(session, Modifier.fillMaxSize()) { view ->
+    view.uiHandler = dialogState
+}
+TerminalDialogs(dialogState)
+```
+
 ## License
 
 MIT

@@ -1,0 +1,8 @@
+<resources>
+    <string name="ghostty_paste_unsafe_title">Вставити цей текст?</string>
+    <string name="ghostty_paste_unsafe_message">Текст у буфері обміну містить розриви рядків або послідовність екранування, що завершує режим вставлення. Оболонка виконує кожен рядок як команду.</string>
+    <string name="ghostty_open_link">Відкрити посилання</string>
+    <string name="ghostty_clipboard_read_title">Дозволити доступ до буфера обміну?</string>
+    <string name="ghostty_clipboard_read_message">Віддалена програма запитує вміст буфера обміну. Подальші запити в цьому сеансі оброблятимуться без підтвердження.</string>
+    <string name="ghostty_clipboard_read_allow">Дозволити</string>
+</resources>

@@ -1,0 +1,8 @@
+<resources>
+    <string name="ghostty_paste_unsafe_title">Testu hau itsatsi?</string>
+    <string name="ghostty_paste_unsafe_message">Arbeleko testuak lerro-jauziak ditu, edo itsaste modua amaitzen duen ihes-sekuentzia bat. Shellak lerro bakoitza komando gisa exekutatzen du.</string>
+    <string name="ghostty_open_link">Ireki esteka</string>
+    <string name="ghostty_clipboard_read_title">Arbelera sartzea baimendu?</string>
+    <string name="ghostty_clipboard_read_message">Urruneko programak arbelaren edukia eskatzen du. Saio honetako hurrengo eskaerak galdetu gabe erantzungo dira.</string>
+    <string name="ghostty_clipboard_read_allow">Baimendu</string>
+</resources>

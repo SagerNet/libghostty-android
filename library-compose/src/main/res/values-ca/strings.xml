@@ -1,0 +1,8 @@
+<resources>
+    <string name="ghostty_paste_unsafe_title">Voleu enganxar aquest text?</string>
+    <string name="ghostty_paste_unsafe_message">El text del porta-retalls conté salts de línia o una seqüència d\'escapament que finalitza el mode d\'enganxament. L\'intèrpret d\'ordres executa cada línia com una ordre.</string>
+    <string name="ghostty_open_link">Obre l\'enllaç</string>
+    <string name="ghostty_clipboard_read_title">Voleu permetre l\'accés al porta-retalls?</string>
+    <string name="ghostty_clipboard_read_message">El programa remot sol·licita el contingut del porta-retalls. Les peticions següents d\'aquesta sessió es respondran sense preguntar.</string>
+    <string name="ghostty_clipboard_read_allow">Permet</string>
+</resources>

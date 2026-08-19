@@ -1,0 +1,8 @@
+<resources>
+    <string name="ghostty_paste_unsafe_title">Осы мәтінді кірістіру керек пе?</string>
+    <string name="ghostty_paste_unsafe_message">Алмасу буферіндегі мәтінде жол үзілімдері немесе кірістіру режимін аяқтайтын escape тізбегі бар. Қабықша әр жолды команда ретінде орындайды.</string>
+    <string name="ghostty_open_link">Сілтемені ашу</string>
+    <string name="ghostty_clipboard_read_title">Алмасу буферіне қол жеткізуді рұқсат ету керек пе?</string>
+    <string name="ghostty_clipboard_read_message">Қашықтағы бағдарлама алмасу буферінің мазмұнын сұрап тұр. Осы сеанстағы келесі сұрауларға растаусыз жауап беріледі.</string>
+    <string name="ghostty_clipboard_read_allow">Рұқсат ету</string>
+</resources>

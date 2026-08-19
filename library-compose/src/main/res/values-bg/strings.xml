@@ -1,0 +1,8 @@
+<resources>
+    <string name="ghostty_paste_unsafe_title">Да се постави ли този текст?</string>
+    <string name="ghostty_paste_unsafe_message">Текстът в клипборда съдържа нови редове или escape последователност, която прекратява режима на поставяне. Обвивката изпълнява всеки ред като команда.</string>
+    <string name="ghostty_open_link">Отваряне на връзката</string>
+    <string name="ghostty_clipboard_read_title">Да се разреши ли достъп до клипборда?</string>
+    <string name="ghostty_clipboard_read_message">Отдалечената програма иска съдържанието на клипборда. Следващите заявки в тази сесия ще се изпълняват без питане.</string>
+    <string name="ghostty_clipboard_read_allow">Позволи</string>
+</resources>

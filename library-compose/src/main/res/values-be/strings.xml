@@ -1,0 +1,8 @@
+<resources>
+    <string name="ghostty_paste_unsafe_title">Уставіць гэты тэкст?</string>
+    <string name="ghostty_paste_unsafe_message">Тэкст у буферы абмену змяшчае разрывы радкоў або escape-паслядоўнасць, якая завяршае рэжым устаўкі. Абалонка выконвае кожны радок як каманду.</string>
+    <string name="ghostty_open_link">Адкрыць спасылку</string>
+    <string name="ghostty_clipboard_read_title">Дазволіць доступ да буфера абмену?</string>
+    <string name="ghostty_clipboard_read_message">Аддаленая праграма запытвае змест буфера абмену. На далейшыя запыты ў гэтым сеансе адказ будзе давацца без пацвярджэння.</string>
+    <string name="ghostty_clipboard_read_allow">Дазволіць</string>
+</resources>

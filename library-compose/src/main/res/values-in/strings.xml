@@ -1,0 +1,8 @@
+<resources>
+    <string name="ghostty_paste_unsafe_title">Tempel teks ini?</string>
+    <string name="ghostty_paste_unsafe_message">Teks papan klip berisi ganti baris, atau urutan escape yang mengakhiri mode tempel. Shell menjalankan setiap baris sebagai perintah.</string>
+    <string name="ghostty_open_link">Buka tautan</string>
+    <string name="ghostty_clipboard_read_title">Izinkan akses papan klip?</string>
+    <string name="ghostty_clipboard_read_message">Program jarak jauh meminta isi papan klip. Permintaan berikutnya dalam sesi ini akan dijawab tanpa bertanya.</string>
+    <string name="ghostty_clipboard_read_allow">Izinkan</string>
+</resources>

@@ -1,0 +1,8 @@
+<resources>
+    <string name="ghostty_paste_unsafe_title">Colar este texto?</string>
+    <string name="ghostty_paste_unsafe_message">O texto da área de transferência contém quebras de linha ou uma sequência de escape que encerra o modo de colagem. O shell executa cada linha como um comando.</string>
+    <string name="ghostty_open_link">Abrir link</string>
+    <string name="ghostty_clipboard_read_title">Permitir acesso à área de transferência?</string>
+    <string name="ghostty_clipboard_read_message">O programa remoto solicita o conteúdo da área de transferência. As próximas solicitações nesta sessão serão respondidas sem perguntar.</string>
+    <string name="ghostty_clipboard_read_allow">Permitir</string>
+</resources>

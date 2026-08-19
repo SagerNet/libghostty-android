@@ -6,34 +6,23 @@ plugins {
 val kotlinVersion = providers.gradleProperty("KOTLIN_VERSION").get()
 
 android {
-    namespace = "io.github.sagernet.libghostty"
+    namespace = "io.github.sagernet.libghostty.extras"
     compileSdk = 37
-
-    ndkVersion = "28.2.13676358"
 
     defaultConfig {
         minSdk = 24
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        consumerProguardFiles("consumer-rules.pro")
-        ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
-        }
-        externalNativeBuild {
-            cmake {
-                arguments += "-DGHOSTTY_VT_DIR=${layout.buildDirectory.dir("ghostty-vt").get().asFile.absolutePath}"
-            }
+    }
+
+    sourceSets {
+        getByName("main") {
+            assets.directories.add(layout.buildDirectory.dir("ghostty-assets").get().asFile.absolutePath)
         }
     }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
-    }
-
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-        }
     }
 }
 
@@ -42,13 +31,14 @@ kotlin {
 }
 
 dependencies {
+    api(project(":library"))
     api("org.jetbrains.kotlin:kotlin-stdlib:$kotlinVersion")
 
     androidTestImplementation("androidx.test:runner:1.7.0")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
 }
 
-apply<GhosttyNativePlugin>()
+apply<GhosttyThemesPlugin>()
 
 mavenPublishing {
     publishToMavenCentral()
@@ -59,8 +49,8 @@ mavenPublishing {
         project.property("VERSION_NAME") as String,
     )
     pom {
-        name.set("libghostty-android")
-        description.set("Android terminal view and libghostty-vt bindings")
+        name.set("libghostty-android-extras")
+        description.set("Theme catalog and font handling for libghostty-android")
         url.set("https://github.com/SagerNet/libghostty-android")
         licenses {
             license {
@@ -82,4 +72,3 @@ mavenPublishing {
         properties.set(mapOf("ghostty.commit" to rootProject.file("GHOSTTY_REF").readText().trim()))
     }
 }
-

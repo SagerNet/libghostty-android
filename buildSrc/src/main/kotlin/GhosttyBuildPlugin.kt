@@ -278,29 +278,40 @@ private data class GhosttyAbi(
     val taskName: String,
 )
 
-class GhosttyBuildPlugin : Plugin<Project> {
-    override fun apply(project: Project) {
-        val ghosttyCommit = project.rootProject.file("GHOSTTY_REF").readText().trim()
-        if (!ghosttyCommit.matches(Regex("[0-9a-f]{40}"))) {
+private class GhosttyEnv(project: Project) {
+    val commit: String = project.rootProject.file("GHOSTTY_REF").readText().trim()
+    val patches = project.rootProject.layout.projectDirectory.dir("patches/ghostty")
+        .asFileTree.matching {
+            include("*.patch")
+        }
+    val buildDir = project.rootProject.layout.buildDirectory.dir("ghostty")
+    val sourceDir = buildDir.map { it.dir("source") }
+
+    init {
+        if (!commit.matches(Regex("[0-9a-f]{40}"))) {
             throw GradleException("GHOSTTY_REF must contain a 40-character commit hash")
         }
-        val ghosttyRepository = "https://github.com/ghostty-org/ghostty.git"
-        val ghosttyPatches = project.rootProject.layout.projectDirectory.dir("patches/ghostty")
-            .asFileTree.matching {
-                include("*.patch")
-            }
-        val ghosttyBuildDir = project.rootProject.layout.buildDirectory.dir("ghostty")
-        val ghosttySourceDir = ghosttyBuildDir.map { it.dir("source") }
-        val ghosttyCacheDir = ghosttyBuildDir.map { it.dir("zig-cache") }
-        val ghosttyVtDir = project.layout.buildDirectory.dir("ghostty-vt")
-        val ghosttyAssetsDir = project.layout.buildDirectory.dir("ghostty-assets")
+    }
 
-        val ghosttySource = project.tasks.register<GhosttySourceTask>("ghosttySource") {
-            repository.set(ghosttyRepository)
-            commit.set(ghosttyCommit)
-            patches.from(ghosttyPatches)
-            sourceDir.set(ghosttySourceDir)
+    val source = project.rootProject.tasks.let { tasks ->
+        if (tasks.names.contains("ghosttySource")) {
+            tasks.named("ghosttySource")
+        } else {
+            tasks.register<GhosttySourceTask>("ghosttySource") {
+                repository.set("https://github.com/ghostty-org/ghostty.git")
+                commit.set(this@GhosttyEnv.commit)
+                patches.from(this@GhosttyEnv.patches)
+                sourceDir.set(this@GhosttyEnv.sourceDir)
+            }
         }
+    }
+}
+
+class GhosttyNativePlugin : Plugin<Project> {
+    override fun apply(project: Project) {
+        val env = GhosttyEnv(project)
+        val ghosttyCacheDir = env.buildDir.map { it.dir("zig-cache") }
+        val ghosttyVtDir = project.layout.buildDirectory.dir("ghostty-vt")
 
         val ghosttyAbis = listOf(
             GhosttyAbi("arm64-v8a", "aarch64-linux-android", "ghosttyBuildArm64"),
@@ -311,12 +322,12 @@ class GhosttyBuildPlugin : Plugin<Project> {
 
         val ghosttyBuildTasks = ghosttyAbis.map { (abi, target, taskName) ->
             project.tasks.register<GhosttyZigBuildTask>(taskName) {
-                dependsOn(ghosttySource)
+                dependsOn(env.source)
                 zigTarget.set(target)
-                commit.set(ghosttyCommit)
-                patches.from(ghosttyPatches)
-                sourceDir.set(ghosttySourceDir)
-                prefixDir.set(ghosttyBuildDir.map { it.dir("out-$abi") })
+                commit.set(env.commit)
+                patches.from(env.patches)
+                sourceDir.set(env.sourceDir)
+                prefixDir.set(env.buildDir.map { it.dir("out-$abi") })
                 cacheDir.set(ghosttyCacheDir)
                 libDir.set(ghosttyVtDir.map { it.dir(abi) })
                 if (abi == "arm64-v8a") {
@@ -325,20 +336,26 @@ class GhosttyBuildPlugin : Plugin<Project> {
             }
         }
 
+        project.tasks.named("preBuild") {
+            dependsOn(ghosttyBuildTasks)
+        }
+    }
+}
+
+class GhosttyThemesPlugin : Plugin<Project> {
+    override fun apply(project: Project) {
+        val env = GhosttyEnv(project)
+        val ghosttyAssetsDir = project.layout.buildDirectory.dir("ghostty-assets")
+
         val ghosttyThemes = project.tasks.register<GhosttyThemesTask>("ghosttyThemes") {
-            dependsOn(ghosttySource)
-            commit.set(ghosttyCommit)
-            sourceDir.set(ghosttySourceDir)
+            dependsOn(env.source)
+            commit.set(env.commit)
+            sourceDir.set(env.sourceDir)
             themesDir.set(ghosttyAssetsDir.map { it.dir("ghostty-themes") })
         }
 
-        val setupGhostty = project.tasks.register("setupGhostty") {
-            dependsOn(ghosttyBuildTasks)
-            dependsOn(ghosttyThemes)
-        }
-
         project.tasks.named("preBuild") {
-            dependsOn(setupGhostty)
+            dependsOn(ghosttyThemes)
         }
     }
 }

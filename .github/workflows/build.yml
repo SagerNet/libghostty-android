@@ -44,7 +44,7 @@ jobs:
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$ndk" > /dev/null
       - uses: gradle/actions/setup-gradle@v5
       - name: Build
-        run: ./gradlew :library:assembleRelease
+        run: ./gradlew :library:assembleRelease :library-extras:assembleRelease :library-compose:assembleRelease
       - name: Check patch assumptions
         run: scripts/check-patch-assumptions.sh build/ghostty/source
       - name: Check 16 KB page alignment
@@ -61,7 +61,10 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: library-release
-          path: library/build/outputs/aar/library-release.aar
+          path: |
+            library/build/outputs/aar/library-release.aar
+            library-extras/build/outputs/aar/library-extras-release.aar
+            library-compose/build/outputs/aar/library-compose-release.aar
 
   test:
     runs-on: ubuntu-latest
@@ -118,7 +121,7 @@ jobs:
           force-avd-creation: false
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot-save -camera-back none
           disable-animations: true
-          script: ./gradlew :library:connectedDebugAndroidTest
+          script: ./gradlew :library:connectedDebugAndroidTest :library-extras:connectedDebugAndroidTest
 
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -164,8 +167,11 @@ jobs:
           ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_KEY_PASSWORD }}
       - name: Create GitHub release
         run: |
-          ./gradlew :library:assembleRelease
-          gh release create "$GITHUB_REF_NAME" library/build/outputs/aar/library-release.aar \
+          ./gradlew :library:assembleRelease :library-extras:assembleRelease :library-compose:assembleRelease
+          gh release create "$GITHUB_REF_NAME" \
+            library/build/outputs/aar/library-release.aar \
+            library-extras/build/outputs/aar/library-extras-release.aar \
+            library-compose/build/outputs/aar/library-compose-release.aar \
             --title "$GITHUB_REF_NAME" \
             --notes "ghostty commit: $(cat GHOSTTY_REF)"
         env:

@@ -1,0 +1,8 @@
+<resources>
+    <string name="ghostty_paste_unsafe_title">粘贴此文本？</string>
+    <string name="ghostty_paste_unsafe_message">剪贴板文本包含换行符，或包含结束粘贴模式的转义序列。Shell 会将每一行作为命令执行。</string>
+    <string name="ghostty_open_link">打开链接</string>
+    <string name="ghostty_clipboard_read_title">允许读取剪贴板？</string>
+    <string name="ghostty_clipboard_read_message">远程程序请求读取剪贴板内容。本会话中的后续请求将不再询问。</string>
+    <string name="ghostty_clipboard_read_allow">允许</string>
+</resources>

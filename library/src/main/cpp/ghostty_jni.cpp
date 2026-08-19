@@ -488,7 +488,7 @@ uint32_t appendUtf16(uint32_t cp, uint16_t* out, uint32_t used, uint32_t cap) {
 extern "C" {
 
 JNIEXPORT jlong JNICALL
-Java_io_nekohasekai_ghostty_GhosttyVt_nativeCreate(
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeCreate(
     JNIEnv* env, jobject, jint cols, jint rows, jlong maxScrollbackLines, jstring xtversion) {
   auto* session = new Session();
 
@@ -584,22 +584,25 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeCreate(
 }
 
 JNIEXPORT void JNICALL
-Java_io_nekohasekai_ghostty_GhosttyVt_nativeFree(JNIEnv*, jobject, jlong handle) {
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeFree(JNIEnv*, jobject, jlong handle) {
   destroySession(fromHandle(handle));
 }
 
 JNIEXPORT jbyteArray JNICALL
-Java_io_nekohasekai_ghostty_GhosttyVt_nativeWrite(
-    JNIEnv* env, jobject, jlong handle, jbyteArray data) {
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeWrite(
+    JNIEnv* env, jobject, jlong handle, jbyteArray data, jint offset, jint length) {
   auto* session = fromHandle(handle);
   if (session == nullptr || data == nullptr) return nullptr;
 
+  const jsize arrayLen = env->GetArrayLength(data);
+  if (offset < 0 || length < 0 || offset > arrayLen - length) return nullptr;
+
   session->ptyOut.clear();
-  const jsize len = env->GetArrayLength(data);
-  if (len > 0) {
+  if (length > 0) {
     jbyte* bytes = env->GetByteArrayElements(data, nullptr);
-    ghostty_terminal_vt_write(session->term, reinterpret_cast<const uint8_t*>(bytes),
-                              static_cast<size_t>(len));
+    ghostty_terminal_vt_write(session->term,
+                              reinterpret_cast<const uint8_t*>(bytes) + offset,
+                              static_cast<size_t>(length));
     env->ReleaseByteArrayElements(data, bytes, JNI_ABORT);
   }
 
@@ -613,7 +616,7 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeWrite(
 }
 
 JNIEXPORT jint JNICALL
-Java_io_nekohasekai_ghostty_GhosttyVt_nativeTakeEventFlags(
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeTakeEventFlags(
     JNIEnv*, jobject, jlong handle) {
   auto* session = fromHandle(handle);
   if (session == nullptr) return 0;
@@ -623,7 +626,7 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeTakeEventFlags(
 }
 
 JNIEXPORT jbyteArray JNICALL
-Java_io_nekohasekai_ghostty_GhosttyVt_nativeGetTitle(
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeGetTitle(
     JNIEnv* env, jobject, jlong handle) {
   auto* session = fromHandle(handle);
   if (session == nullptr) return nullptr;
@@ -631,7 +634,7 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeGetTitle(
 }
 
 JNIEXPORT jbyteArray JNICALL
-Java_io_nekohasekai_ghostty_GhosttyVt_nativeTakeClipboard(
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeTakeClipboard(
     JNIEnv* env, jobject, jlong handle) {
   auto* session = fromHandle(handle);
   if (session == nullptr || session->clipboardText.empty()) return nullptr;
@@ -644,7 +647,7 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeTakeClipboard(
 }
 
 JNIEXPORT void JNICALL
-Java_io_nekohasekai_ghostty_GhosttyVt_nativeResize(
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeResize(
     JNIEnv*, jobject, jlong handle, jint cols, jint rows, jint cellWidthPx, jint cellHeightPx) {
   auto* session = fromHandle(handle);
   if (session == nullptr) return;
@@ -658,20 +661,28 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeResize(
   markRenderDirtyFull(session);
 }
 
+static bool colorFromArgb(jlong value, GhosttyColorRgb* out) {
+  if (value < 0) return false;
+  out->r = static_cast<uint8_t>((value >> 16) & 0xFF);
+  out->g = static_cast<uint8_t>((value >> 8) & 0xFF);
+  out->b = static_cast<uint8_t>(value & 0xFF);
+  return true;
+}
+
 JNIEXPORT void JNICALL
-Java_io_nekohasekai_ghostty_GhosttyVt_nativeSetTheme(
-    JNIEnv* env, jobject, jlong handle, jstring foreground, jstring background,
-    jstring cursor, jobjectArray palette) {
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeSetTheme(
+    JNIEnv* env, jobject, jlong handle, jlong foreground, jlong background,
+    jlong cursor, jlongArray palette) {
   auto* session = fromHandle(handle);
   if (session == nullptr) return;
 
   GhosttyColorRgb rgb{};
   ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND,
-                       parseColor(env, foreground, &rgb) ? &rgb : nullptr);
+                       colorFromArgb(foreground, &rgb) ? &rgb : nullptr);
   ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND,
-                       parseColor(env, background, &rgb) ? &rgb : nullptr);
+                       colorFromArgb(background, &rgb) ? &rgb : nullptr);
   ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_COLOR_CURSOR,
-                       parseColor(env, cursor, &rgb) ? &rgb : nullptr);
+                       colorFromArgb(cursor, &rgb) ? &rgb : nullptr);
 
   if (palette == nullptr) {
     ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_COLOR_PALETTE, nullptr);
@@ -680,12 +691,12 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeSetTheme(
     ghostty_color_palette_default(table);
     jsize count = env->GetArrayLength(palette);
     if (count > 256) count = 256;
+    jlong* entries = env->GetLongArrayElements(palette, nullptr);
     for (jsize i = 0; i < count; i++) {
-      auto entry = static_cast<jstring>(env->GetObjectArrayElement(palette, i));
       GhosttyColorRgb parsed{};
-      if (parseColor(env, entry, &parsed)) table[i] = parsed;
-      if (entry != nullptr) env->DeleteLocalRef(entry);
+      if (colorFromArgb(entries[i], &parsed)) table[i] = parsed;
     }
+    env->ReleaseLongArrayElements(palette, entries, JNI_ABORT);
     ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_COLOR_PALETTE, table);
   }
 
@@ -693,14 +704,14 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeSetTheme(
 }
 
 JNIEXPORT jint JNICALL
-Java_io_nekohasekai_ghostty_GhosttyVt_nativeParseColor(
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeParseColor(
     JNIEnv* env, jobject, jstring color) {
   GhosttyColorRgb rgb{};
   return parseColor(env, color, &rgb) ? argb(rgb) : 0;
 }
 
 JNIEXPORT void JNICALL
-Java_io_nekohasekai_ghostty_GhosttyVt_nativeScroll(
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeScroll(
     JNIEnv*, jobject, jlong handle, jint deltaRows) {
   auto* session = fromHandle(handle);
   if (session == nullptr) return;
@@ -711,7 +722,7 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeScroll(
 }
 
 JNIEXPORT void JNICALL
-Java_io_nekohasekai_ghostty_GhosttyVt_nativeScrollToBottom(
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeScrollToBottom(
     JNIEnv*, jobject, jlong handle) {
   auto* session = fromHandle(handle);
   if (session == nullptr) return;
@@ -721,7 +732,7 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeScrollToBottom(
 }
 
 JNIEXPORT jint JNICALL
-Java_io_nekohasekai_ghostty_GhosttyVt_nativeViewportState(
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeViewportState(
     JNIEnv*, jobject, jlong handle) {
   auto* session = fromHandle(handle);
   if (session == nullptr) return 0;
@@ -749,7 +760,7 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeViewportState(
 }
 
 JNIEXPORT jlongArray JNICALL
-Java_io_nekohasekai_ghostty_GhosttyVt_nativeScrollbar(
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeScrollbar(
     JNIEnv* env, jobject, jlong handle) {
   auto* session = fromHandle(handle);
   if (session == nullptr) return nullptr;
@@ -768,7 +779,7 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeScrollbar(
 }
 
 JNIEXPORT jint JNICALL
-Java_io_nekohasekai_ghostty_GhosttyVt_nativeSnapshot(
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeSnapshot(
     JNIEnv* env, jobject, jlong handle, jobject buffer) {
   auto* session = fromHandle(handle);
   if (session == nullptr || buffer == nullptr) return -1;
@@ -1024,7 +1035,7 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeSnapshot(
 }
 
 JNIEXPORT jboolean JNICALL
-Java_io_nekohasekai_ghostty_GhosttyVt_nativeSelectWord(
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeSelectWord(
     JNIEnv*, jobject, jlong handle, jint col, jint row) {
   auto* session = fromHandle(handle);
   if (session == nullptr) return JNI_FALSE;
@@ -1043,7 +1054,7 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeSelectWord(
 }
 
 JNIEXPORT jboolean JNICALL
-Java_io_nekohasekai_ghostty_GhosttyVt_nativeSelectAll(JNIEnv*, jobject, jlong handle) {
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeSelectAll(JNIEnv*, jobject, jlong handle) {
   auto* session = fromHandle(handle);
   if (session == nullptr) return JNI_FALSE;
   GhosttySelection selection{};
@@ -1055,7 +1066,7 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeSelectAll(JNIEnv*, jobject, jlong ha
 }
 
 JNIEXPORT jboolean JNICALL
-Java_io_nekohasekai_ghostty_GhosttyVt_nativeSetSelection(
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeSetSelection(
     JNIEnv*, jobject, jlong handle, jint anchorCol, jint anchorRow, jint col, jint row) {
   auto* session = fromHandle(handle);
   if (session == nullptr) return JNI_FALSE;
@@ -1076,7 +1087,7 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeSetSelection(
 }
 
 JNIEXPORT void JNICALL
-Java_io_nekohasekai_ghostty_GhosttyVt_nativeClearSelection(JNIEnv*, jobject, jlong handle) {
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeClearSelection(JNIEnv*, jobject, jlong handle) {
   auto* session = fromHandle(handle);
   if (session == nullptr) return;
   ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_SELECTION, nullptr);
@@ -1111,7 +1122,7 @@ jbyteArray formatSelection(JNIEnv* env, Session* session, const GhosttySelection
 }
 
 JNIEXPORT jbyteArray JNICALL
-Java_io_nekohasekai_ghostty_GhosttyVt_nativeSelectionText(
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeSelectionText(
     JNIEnv* env, jobject, jlong handle) {
   auto* session = fromHandle(handle);
   if (session == nullptr) return nullptr;
@@ -1119,7 +1130,7 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeSelectionText(
 }
 
 JNIEXPORT jbyteArray JNICALL
-Java_io_nekohasekai_ghostty_GhosttyVt_nativeViewportText(
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeViewportText(
     JNIEnv* env, jobject, jlong handle) {
   auto* session = fromHandle(handle);
   if (session == nullptr || session->cols == 0 || session->rows == 0) return nullptr;
@@ -1140,7 +1151,7 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeViewportText(
 }
 
 JNIEXPORT jboolean JNICALL
-Java_io_nekohasekai_ghostty_GhosttyVt_nativeIsPasteSafe(
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeIsPasteSafe(
     JNIEnv* env, jobject, jbyteArray data) {
   if (data == nullptr) return JNI_TRUE;
   const jsize len = env->GetArrayLength(data);
@@ -1153,7 +1164,7 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeIsPasteSafe(
 }
 
 JNIEXPORT jbyteArray JNICALL
-Java_io_nekohasekai_ghostty_GhosttyVt_nativeEncodePaste(
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeEncodePaste(
     JNIEnv* env, jobject, jlong handle, jbyteArray data) {
   auto* session = fromHandle(handle);
   if (session == nullptr || data == nullptr) return nullptr;
@@ -1188,7 +1199,7 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeEncodePaste(
 }
 
 JNIEXPORT jbyteArray JNICALL
-Java_io_nekohasekai_ghostty_GhosttyVt_nativeEncodeKey(
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeEncodeKey(
     JNIEnv* env, jobject, jlong handle, jint keyCode, jint action, jint metaState,
     jint unshiftedCodepoint, jboolean composing, jbyteArray utf8) {
   auto* session = fromHandle(handle);
@@ -1243,7 +1254,7 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeEncodeKey(
 }
 
 JNIEXPORT jbyteArray JNICALL
-Java_io_nekohasekai_ghostty_GhosttyVt_nativeEncodeMouse(
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeEncodeMouse(
     JNIEnv* env, jobject, jlong handle, jint action, jint button, jint col, jint row,
     jint metaState) {
   auto* session = fromHandle(handle);
@@ -1294,7 +1305,7 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeEncodeMouse(
 }
 
 JNIEXPORT jlongArray JNICALL
-Java_io_nekohasekai_ghostty_GhosttyVt_nativeKittyPlacements(
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeKittyPlacements(
     JNIEnv* env, jobject, jlong handle) {
   auto* session = fromHandle(handle);
   if (session == nullptr || session->kittyIterator == nullptr) return nullptr;
@@ -1399,7 +1410,7 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeKittyPlacements(
 }
 
 JNIEXPORT jintArray JNICALL
-Java_io_nekohasekai_ghostty_GhosttyVt_nativeKittyImage(
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeKittyImage(
     JNIEnv* env, jobject, jlong handle, jint imageId) {
   auto* session = fromHandle(handle);
   if (session == nullptr) return nullptr;
@@ -1478,7 +1489,7 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeKittyImage(
 }
 
 JNIEXPORT jbyteArray JNICALL
-Java_io_nekohasekai_ghostty_GhosttyVt_nativeGetPwd(
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeGetPwd(
     JNIEnv* env, jobject, jlong handle) {
   auto* session = fromHandle(handle);
   if (session == nullptr) return nullptr;
@@ -1486,7 +1497,7 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeGetPwd(
 }
 
 JNIEXPORT jbyteArray JNICALL
-Java_io_nekohasekai_ghostty_GhosttyVt_nativeTakeNotification(
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeTakeNotification(
     JNIEnv* env, jobject, jlong handle) {
   auto* session = fromHandle(handle);
   if (session == nullptr || session->notifications.empty()) return nullptr;
@@ -1505,7 +1516,7 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeTakeNotification(
 }
 
 JNIEXPORT jintArray JNICALL
-Java_io_nekohasekai_ghostty_GhosttyVt_nativeGetProgress(
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeGetProgress(
     JNIEnv* env, jobject, jlong handle) {
   auto* session = fromHandle(handle);
   if (session == nullptr) return nullptr;
@@ -1517,7 +1528,7 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeGetProgress(
 }
 
 JNIEXPORT jbyteArray JNICALL
-Java_io_nekohasekai_ghostty_GhosttyVt_nativeSetColorScheme(
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeSetColorScheme(
     JNIEnv* env, jobject, jlong handle, jboolean dark) {
   auto* session = fromHandle(handle);
   if (session == nullptr) return nullptr;
@@ -1537,7 +1548,7 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeSetColorScheme(
 }
 
 JNIEXPORT jint JNICALL
-Java_io_nekohasekai_ghostty_GhosttyVt_nativeTakeClipboardRead(
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeTakeClipboardRead(
     JNIEnv*, jobject, jlong handle) {
   auto* session = fromHandle(handle);
   if (session == nullptr) return -1;
@@ -1547,7 +1558,7 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeTakeClipboardRead(
 }
 
 JNIEXPORT jbyteArray JNICALL
-Java_io_nekohasekai_ghostty_GhosttyVt_nativeHyperlinkAt(
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeHyperlinkAt(
     JNIEnv* env, jobject, jlong handle, jint col, jint row) {
   auto* session = fromHandle(handle);
   if (session == nullptr || col < 0 || row < 0) return nullptr;
@@ -1564,7 +1575,7 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeHyperlinkAt(
 }
 
 JNIEXPORT jbyteArray JNICALL
-Java_io_nekohasekai_ghostty_GhosttyVt_nativeEncodeFocus(
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeEncodeFocus(
     JNIEnv* env, jobject, jlong handle, jboolean gained) {
   auto* session = fromHandle(handle);
   if (session == nullptr || !modeSet(session, GHOSTTY_MODE_FOCUS_EVENT)) return nullptr;

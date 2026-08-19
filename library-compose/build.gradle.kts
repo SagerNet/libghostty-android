@@ -1,39 +1,26 @@
 plugins {
     id("com.android.library")
+    id("org.jetbrains.kotlin.plugin.compose")
     id("com.vanniktech.maven.publish")
 }
 
 val kotlinVersion = providers.gradleProperty("KOTLIN_VERSION").get()
 
 android {
-    namespace = "io.github.sagernet.libghostty"
+    namespace = "io.github.sagernet.libghostty.compose"
     compileSdk = 37
-
-    ndkVersion = "28.2.13676358"
 
     defaultConfig {
         minSdk = 24
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        consumerProguardFiles("consumer-rules.pro")
-        ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
-        }
-        externalNativeBuild {
-            cmake {
-                arguments += "-DGHOSTTY_VT_DIR=${layout.buildDirectory.dir("ghostty-vt").get().asFile.absolutePath}"
-            }
-        }
+    }
+
+    buildFeatures {
+        compose = true
     }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
-    }
-
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-        }
     }
 }
 
@@ -42,13 +29,14 @@ kotlin {
 }
 
 dependencies {
+    api(project(":library"))
     api("org.jetbrains.kotlin:kotlin-stdlib:$kotlinVersion")
 
-    androidTestImplementation("androidx.test:runner:1.7.0")
-    androidTestImplementation("androidx.test.ext:junit:1.3.0")
+    implementation(platform("androidx.compose:compose-bom:2026.08.00"))
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.foundation:foundation")
+    implementation("androidx.compose.material3:material3")
 }
-
-apply<GhosttyNativePlugin>()
 
 mavenPublishing {
     publishToMavenCentral()
@@ -59,8 +47,8 @@ mavenPublishing {
         project.property("VERSION_NAME") as String,
     )
     pom {
-        name.set("libghostty-android")
-        description.set("Android terminal view and libghostty-vt bindings")
+        name.set("libghostty-android-compose")
+        description.set("Compose wrapper and dialogs for libghostty-android")
         url.set("https://github.com/SagerNet/libghostty-android")
         licenses {
             license {
@@ -79,7 +67,5 @@ mavenPublishing {
             connection.set("scm:git:https://github.com/SagerNet/libghostty-android.git")
             developerConnection.set("scm:git:ssh://git@github.com/SagerNet/libghostty-android.git")
         }
-        properties.set(mapOf("ghostty.commit" to rootProject.file("GHOSTTY_REF").readText().trim()))
     }
 }
-

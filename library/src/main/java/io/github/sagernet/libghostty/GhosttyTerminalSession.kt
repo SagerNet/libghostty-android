@@ -1,0 +1,401 @@
+package io.github.sagernet.libghostty
+
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.os.Handler
+import android.os.Looper
+import android.util.Base64
+import android.util.Log
+
+/**
+ * Threading: [feedOutput] and [finish] may be called from any thread. All other methods and
+ * property writes must happen on the main thread. [Listener] methods are called on the main
+ * thread. [Transport] methods may be called from any thread that calls [feedOutput], and from
+ * the main thread; implementations must be thread safe.
+ *
+ * Lifecycle: [close] is idempotent; after it, every method is a no-op.
+ */
+public class GhosttyTerminalSession(
+    context: Context,
+    options: Options = Options(),
+) {
+
+    public class Options(
+        public val columns: Int = 80,
+        public val rows: Int = 24,
+        public val maxScrollbackLines: Long = 10_000,
+        public val reportedVersion: String = "libghostty-android",
+    ) {
+        init {
+            require(columns >= 1) { "columns must be >= 1" }
+            require(rows >= 1) { "rows must be >= 1" }
+            require(maxScrollbackLines >= 0) { "maxScrollbackLines must be >= 0" }
+        }
+    }
+
+    public interface Listener {
+        public fun onTitleChanged(session: GhosttyTerminalSession) {}
+
+        public fun onBell(session: GhosttyTerminalSession) {}
+
+        public fun onWorkingDirectoryChanged(session: GhosttyTerminalSession) {}
+
+        public fun onNotification(session: GhosttyTerminalSession, title: String, body: String) {}
+
+        public fun onProgressChanged(session: GhosttyTerminalSession) {}
+
+        public fun onFinished(session: GhosttyTerminalSession) {}
+    }
+
+    public interface Transport {
+        public fun sendInput(data: ByteArray)
+
+        public fun sendResize(columns: Int, rows: Int, widthPixels: Int, heightPixels: Int)
+
+        public fun close()
+    }
+
+    private val context = context.applicationContext
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    internal val terminalAccess = Any()
+
+    internal var handle = GhosttyVt.nativeCreate(
+        options.columns,
+        options.rows,
+        options.maxScrollbackLines,
+        options.reportedVersion,
+    )
+        private set
+
+    internal inline fun <T> withTerminal(block: (Long) -> T): T? = synchronized(terminalAccess) {
+        if (handle == 0L) null else block(handle)
+    }
+
+    internal val terminalAlive: Boolean
+        get() = synchronized(terminalAccess) { handle != 0L }
+
+    public val hasAttachedView: Boolean
+        get() = attachedView != null
+
+    public var listener: Listener? = null
+
+    /** When false, clipboard write requests from the terminal are dropped. */
+    public var systemClipboardWriteEnabled: Boolean = true
+
+    public var transport: Transport? = null
+        set(value) {
+            field = value
+            if (value != null && columns > 0 && rows > 0) {
+                try {
+                    value.sendResize(
+                        columns,
+                        rows,
+                        columns * cellWidthPixels,
+                        rows * cellHeightPixels,
+                    )
+                } catch (e: Exception) {
+                    onTransportFailure("send resize", e)
+                }
+            }
+        }
+
+    @Volatile
+    public var isFinished: Boolean = false
+        private set
+
+    public var title: String? = null
+        private set
+
+    public var workingDirectory: String? = null
+        private set
+
+    /** A GhosttyVt.PROGRESS_STATE_* value. */
+    public var progressState: Int = GhosttyVt.PROGRESS_STATE_REMOVE
+        private set
+
+    /** 0..100, or -1 when the report omitted it. */
+    public var progressPercent: Int = -1
+        private set
+
+    public var exitCode: Int = 0
+        private set
+
+    public var selectionBackground: Int? = null
+        private set
+
+    public var selectionForeground: Int? = null
+        private set
+
+    public var columns: Int = 0
+        private set
+
+    public var rows: Int = 0
+        private set
+
+    private var clipboardReadApproved = false
+    private var attachedView: GhosttyTerminalView? = null
+    private var cellWidthPixels = 0
+    private var cellHeightPixels = 0
+
+    internal fun attach(view: GhosttyTerminalView) {
+        check(attachedView == null || attachedView === view) {
+            "session is already attached to another view"
+        }
+        attachedView = view
+    }
+
+    internal fun detach(view: GhosttyTerminalView) {
+        if (attachedView === view) {
+            attachedView = null
+        }
+    }
+
+    // timg abandons its kitty graphics probe when the DA1 reply does not
+    // arrive within a small time budget.
+    public fun feedOutput(data: ByteArray, offset: Int = 0, length: Int = data.size) {
+        val response = withTerminal { GhosttyVt.nativeWrite(it, data, offset, length) }
+        if (response != null && response.isNotEmpty()) {
+            sendRawInput(response)
+        }
+        mainHandler.post {
+            withTerminal { drainEvents(it) }
+            attachedView?.onSessionOutput()
+        }
+    }
+
+    private fun drainEvents(handle: Long) {
+        val flags = GhosttyVt.nativeTakeEventFlags(handle)
+        if (flags == 0) return
+        if (flags and GhosttyVt.EVENT_TITLE != 0) {
+            title = GhosttyVt.nativeGetTitle(handle)?.toString(Charsets.UTF_8)
+            listener?.onTitleChanged(this)
+        }
+        if (flags and GhosttyVt.EVENT_BELL != 0) {
+            attachedView?.onSessionBell()
+            listener?.onBell(this)
+        }
+        if (flags and GhosttyVt.EVENT_CLIPBOARD != 0) {
+            val text = GhosttyVt.nativeTakeClipboard(handle)?.toString(Charsets.UTF_8)
+            if (systemClipboardWriteEnabled && !text.isNullOrEmpty()) {
+                context.getSystemService(ClipboardManager::class.java)
+                    ?.setPrimaryClip(ClipData.newPlainText(null, text))
+            }
+        }
+        if (flags and GhosttyVt.EVENT_PWD != 0) {
+            workingDirectory = GhosttyVt.nativeGetPwd(handle)
+                ?.toString(Charsets.UTF_8)
+                ?.let(::pwdToPath)
+            listener?.onWorkingDirectoryChanged(this)
+        }
+        if (flags and GhosttyVt.EVENT_NOTIFICATION != 0) {
+            while (true) {
+                val packed = GhosttyVt.nativeTakeNotification(handle) ?: break
+                if (packed.size < 4) continue
+                val titleLength = (packed[0].toInt() and 0xFF) or
+                    ((packed[1].toInt() and 0xFF) shl 8) or
+                    ((packed[2].toInt() and 0xFF) shl 16) or
+                    ((packed[3].toInt() and 0xFF) shl 24)
+                if (titleLength < 0 || 4 + titleLength > packed.size) continue
+                listener?.onNotification(
+                    this,
+                    String(packed, 4, titleLength, Charsets.UTF_8),
+                    String(packed, 4 + titleLength, packed.size - 4 - titleLength, Charsets.UTF_8),
+                )
+            }
+        }
+        if (flags and GhosttyVt.EVENT_CLIPBOARD_READ != 0) {
+            val location = GhosttyVt.nativeTakeClipboardRead(handle)
+            if (location >= 0) handleClipboardRead(location)
+        }
+        if (flags and GhosttyVt.EVENT_PROGRESS != 0) {
+            val progress = GhosttyVt.nativeGetProgress(handle)
+            if (progress != null && progress.size == 2) {
+                progressState = progress[0]
+                progressPercent = progress[1]
+                listener?.onProgressChanged(this)
+            }
+        }
+    }
+
+    private fun pwdToPath(raw: String): String? {
+        if (raw.isEmpty()) return null
+        if (!raw.startsWith("file://")) return raw
+        val withoutScheme = raw.removePrefix("file://")
+        val slash = withoutScheme.indexOf('/')
+        if (slash < 0) return null
+        return runCatching { java.net.URLDecoder.decode(withoutScheme.substring(slash), "UTF-8") }
+            .getOrNull()
+    }
+
+    public fun setColorScheme(dark: Boolean) {
+        val report = withTerminal { GhosttyVt.nativeSetColorScheme(it, dark) }
+        if (report != null && report.isNotEmpty()) sendRawInput(report)
+    }
+
+    private fun handleClipboardRead(location: Int) {
+        if (clipboardReadApproved) {
+            respondClipboardRead(location, readClipboardText())
+            return
+        }
+        val view = attachedView
+        if (view == null) {
+            respondClipboardRead(location, null)
+            return
+        }
+        view.uiHandler.requestClipboardRead(view.context) { approved ->
+            if (approved) {
+                clipboardReadApproved = true
+                respondClipboardRead(location, readClipboardText())
+            } else {
+                respondClipboardRead(location, null)
+            }
+        }
+    }
+
+    private fun readClipboardText(): String? = context.getSystemService(ClipboardManager::class.java)
+        ?.primaryClip
+        ?.takeIf { it.itemCount > 0 }
+        ?.getItemAt(0)
+        ?.coerceToText(context)
+        ?.toString()
+
+    private fun respondClipboardRead(location: Int, text: String?) {
+        val kind = when (location) {
+            GhosttyVt.CLIPBOARD_LOCATION_SELECTION -> 's'
+            GhosttyVt.CLIPBOARD_LOCATION_PRIMARY -> 'p'
+            else -> 'c'
+        }
+        val encoded = Base64.encodeToString(text.orEmpty().toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+        sendRawInput("\u001b]52;$kind;$encoded\u0007".toByteArray(Charsets.ISO_8859_1))
+    }
+
+    public fun sendFocus(gained: Boolean) {
+        if (isFinished) return
+        val report = withTerminal { GhosttyVt.nativeEncodeFocus(it, gained) }
+        if (report != null && report.isNotEmpty()) sendRawInput(report)
+    }
+
+    public fun sendTypedInput(data: ByteArray) {
+        transportSend(sanitizeInput(data))
+    }
+
+    public fun sendRawInput(data: ByteArray) {
+        transportSend(data)
+    }
+
+    public fun screenText(): String? = withTerminal { GhosttyVt.nativeViewportText(it) }
+        ?.toString(Charsets.UTF_8)
+
+    public fun selectionText(): String? = withTerminal { GhosttyVt.nativeSelectionText(it) }
+        ?.toString(Charsets.UTF_8)
+
+    private fun transportSend(data: ByteArray) {
+        val currentTransport = transport ?: return
+        try {
+            currentTransport.sendInput(data)
+        } catch (e: Exception) {
+            onTransportFailure("send input", e)
+        }
+    }
+
+    private fun onTransportFailure(operation: String, e: Exception) {
+        Log.e(TAG, "transport $operation failed", e)
+        if (!isFinished) {
+            finish(-1)
+        }
+    }
+
+    public fun resize(columns: Int, rows: Int, cellWidthPixels: Int, cellHeightPixels: Int) {
+        val changed = columns != this.columns || rows != this.rows ||
+            cellWidthPixels != this.cellWidthPixels || cellHeightPixels != this.cellHeightPixels
+        this.columns = columns
+        this.rows = rows
+        this.cellWidthPixels = cellWidthPixels
+        this.cellHeightPixels = cellHeightPixels
+        withTerminal { GhosttyVt.nativeResize(it, columns, rows, cellWidthPixels, cellHeightPixels) }
+        if (!changed) return
+        val currentTransport = transport ?: return
+        try {
+            currentTransport.sendResize(columns, rows, columns * cellWidthPixels, rows * cellHeightPixels)
+        } catch (e: Exception) {
+            onTransportFailure("send resize", e)
+        }
+    }
+
+    public fun setTheme(theme: GhosttyTheme) {
+        selectionBackground = theme.selectionBackground
+        selectionForeground = theme.selectionForeground
+        withTerminal {
+            GhosttyVt.nativeSetTheme(
+                it,
+                theme.foreground?.toArgbLong() ?: -1L,
+                theme.background?.toArgbLong() ?: -1L,
+                theme.cursorColor?.toArgbLong() ?: -1L,
+                LongArray(theme.palette.size) { index -> theme.palette[index]?.toArgbLong() ?: -1L },
+            )
+        }
+        attachedView?.onSessionUpdated()
+    }
+
+    private fun Int.toArgbLong(): Long = toLong() and 0xFFFFFFFFL
+
+    public fun finish(exitCode: Int = 0) {
+        this.exitCode = exitCode
+        isFinished = true
+        mainHandler.post {
+            listener?.onFinished(this)
+        }
+    }
+
+    public fun close() {
+        try {
+            transport?.close()
+        } catch (e: Exception) {
+            Log.e(TAG, "transport close failed", e)
+        }
+        transport = null
+        mainHandler.post {
+            withTerminal {
+                GhosttyVt.nativeFree(it)
+                handle = 0
+            }
+        }
+    }
+
+    private fun sanitizeInput(data: ByteArray): ByteArray {
+        var i = 0
+        while (i < data.size) {
+            val byte = data[i].toInt()
+            if (byte == 0x0A || (byte == 0x1B && isBracketedPasteMarker(data, i))) break
+            i++
+        }
+        if (i == data.size) return data
+        val result = ByteArray(data.size)
+        data.copyInto(result, endIndex = i)
+        var writePosition = i
+        while (i < data.size) {
+            val byte = data[i]
+            if (byte.toInt() == 0x1B && isBracketedPasteMarker(data, i)) {
+                i += 6
+                continue
+            }
+            result[writePosition++] = if (byte.toInt() == 0x0A) 0x0D else byte
+            i++
+        }
+        return if (writePosition == result.size) result else result.copyOf(writePosition)
+    }
+
+    private fun isBracketedPasteMarker(data: ByteArray, i: Int): Boolean = i + 5 < data.size &&
+        data[i + 1] == '['.code.toByte() &&
+        data[i + 2] == '2'.code.toByte() &&
+        data[i + 3] == '0'.code.toByte() &&
+        (data[i + 4] == '0'.code.toByte() || data[i + 4] == '1'.code.toByte()) &&
+        data[i + 5] == '~'.code.toByte()
+
+    private companion object {
+        const val TAG = "GhosttyTerminalSession"
+    }
+}
