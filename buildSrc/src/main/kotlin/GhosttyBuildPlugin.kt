@@ -1,17 +1,3 @@
-// Builds libghostty-vt from source for all Android ABIs and installs the
-// ghostty theme catalog as library assets.
-//
-// Requires Zig (the version ghostty's build.zig.zon declares as minimum).
-// The pinned ghostty commit is read from the GHOSTTY_REF file in the
-// repository root.
-//
-// Outputs:
-//   library/build/ghostty-vt/include/                    C headers
-//   library/build/ghostty-vt/<abi>/libghostty-vt.a
-//   library/build/ghostty-assets/ghostty-themes/         theme catalog + index
-//   (the index must not be a dotfile: AGP asset merging strips dotfiles
-//   from the AAR and again from every consumer's merged assets)
-
 import java.io.ByteArrayOutputStream
 import java.io.File
 import javax.inject.Inject
@@ -64,8 +50,6 @@ abstract class GhosttySourceTask @Inject constructor(
     @get:PathSensitive(PathSensitivity.NONE)
     abstract val patches: ConfigurableFileCollection
 
-    // Not an @OutputDirectory: fingerprinting the full checkout is too slow;
-    // isCurrent() stands in and also invalidates a dirty tree.
     @get:Internal
     abstract val sourceDir: DirectoryProperty
 
@@ -132,7 +116,6 @@ abstract class GhosttyZigBuildTask @Inject constructor(
     @get:Input
     abstract val zigTarget: Property<String>
 
-    // Cache key only; not read by the action.
     @get:Input
     abstract val commit: Property<String>
 
@@ -191,7 +174,6 @@ abstract class GhosttyThemesTask @Inject constructor(
     private val fileSystemOperations: FileSystemOperations,
     private val archiveOperations: ArchiveOperations,
 ) : DefaultTask() {
-    // Cache key only; not read by the action.
     @get:Input
     abstract val commit: Property<String>
 
@@ -259,6 +241,8 @@ abstract class GhosttyThemesTask @Inject constructor(
 
     private fun writeIndex(themes: File) {
         val themeFiles = themes.listFiles { file -> file.isFile }?.sortedBy { it.name } ?: emptyList()
+        // AGP asset merging strips dotfiles from the AAR and again from every
+        // consumer's merged assets.
         File(themes, "index").writeText(
             themeFiles.joinToString("") { file ->
                 val background = file.useLines { lines ->

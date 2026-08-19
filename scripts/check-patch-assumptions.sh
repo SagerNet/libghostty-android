@@ -1,8 +1,4 @@
 #!/usr/bin/env bash
-# 0005-lib-vt-clipboard-read-effect.patch appends
-# GHOSTTY_TERMINAL_OPT_CLIPBOARD_READ = 38 after the upstream enum. Upstream
-# adding its own option 38 would not necessarily fail git apply, so verify the
-# upstream part of the enum still ends at 37.
 set -euo pipefail
 
 source_dir="${1:?usage: check-patch-assumptions.sh <ghostty-source-dir>}"

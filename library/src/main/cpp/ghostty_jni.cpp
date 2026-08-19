@@ -1,38 +1,3 @@
-// JNI bridge between io.nekohasekai.ghostty.GhosttyVt and libghostty-vt.
-//
-// One native handle owns a terminal, its render state, reusable row/cell
-// iterators, a key encoder, and a mouse encoder. All calls must come from
-// the Android main thread; the native side keeps per-handle state without
-// locking.
-//
-// nativeSnapshot flattens the dirty viewport rows into a caller-provided
-// direct ByteBuffer (little-endian) so Kotlin can repaint without any
-// per-cell JNI calls. See GhosttyTerminalView.kt for the reader side.
-//
-// Buffer layout:
-//   header: 15 x i32
-//     [0] version (2)          [1] dirty kind (GhosttyRenderStateDirty,
-//                                  forwarded verbatim)
-//     [2] cols                 [3] rows
-//     [4] default bg (ARGB)    [5] default fg (ARGB)
-//     [6] cursor x or -1       [7] cursor y or -1
-//     [8] cursor style (GhosttyRenderStateCursorVisualStyle, forwarded
-//         verbatim)               [9] cursor visible (0/1)
-//     [10] row record count    [11] cursor blinking (0/1)
-//     [12] cursor color (ARGB) or 0 when unconfigured
-//     [13] truncated (0/1): rows remain undelivered because the buffer is
-//          full; their dirty state is preserved — grow the buffer and
-//          snapshot again
-//     [14] password input (0/1): the shell reported a password prompt
-//          (OSC 133 or heuristics)
-//   row record:
-//     i32 rowIndex, i32 selStartX or -1, i32 selEndX or -1, i32 textUnits
-//     cells[cols] x 16 bytes:
-//       i32 fg (ARGB), i32 bg (ARGB),
-//       u16 textOffset (UTF-16 units into row blob), u16 textLen (units),
-//       u16 flags, u16 underline style (GhosttySgrUnderline, low 3 bits)
-//     u16 text[textUnits], zero-padded to a 4-byte boundary
-
 #include <jni.h>
 #include <android/keycodes.h>
 #include <android/log.h>
@@ -54,7 +19,6 @@ namespace {
 
 constexpr const char* kLogTag = "ghostty_android";
 
-// Cell flag bits shared with GhosttyTerminalView.kt.
 constexpr uint16_t kFlagBold = 1 << 0;
 constexpr uint16_t kFlagItalic = 1 << 1;
 constexpr uint16_t kFlagFaint = 1 << 2;
@@ -70,15 +34,11 @@ constexpr uint16_t kFlagBgNone = 1 << 10;
 constexpr size_t kHeaderBytes = 15 * sizeof(int32_t);
 constexpr size_t kRowHeaderBytes = 4 * sizeof(int32_t);
 constexpr size_t kCellRecordBytes = 16;
-// GhosttyTerminalView.kt reads these back as HEADER_BYTES / CELL_RECORD_BYTES.
 static_assert(kHeaderBytes == 60, "header size drifted from the Kotlin reader");
 static_assert(kCellRecordBytes == 2 * sizeof(int32_t) + 4 * sizeof(uint16_t),
               "cell record size drifted from its field layout");
-// Cap per-cell grapheme text; anything longer is truncated (degenerate input).
 constexpr uint32_t kMaxCellTextUnits = 32;
 
-// Event flags drained by nativeTakeEventFlags after each write; must mirror
-// GhosttyVt.EVENT_* on the Kotlin side.
 constexpr jint kEventBell = 1;
 constexpr jint kEventTitle = 1 << 1;
 constexpr jint kEventClipboard = 1 << 2;
@@ -87,17 +47,12 @@ constexpr jint kEventNotification = 1 << 4;
 constexpr jint kEventProgress = 1 << 5;
 constexpr jint kEventClipboardRead = 1 << 6;
 
-// The unicode placeholder codepoint for Kitty virtual placements; cells
-// carrying it are painted by the image layer, not as text.
 constexpr uint32_t kKittyPlaceholder = 0x10EEEE;
 
-// Mode 2026 defers rendering until the guarding program clears it; cap the
-// wait so a program that dies mid-batch cannot freeze the screen.
 constexpr auto kSyncOutputTimeout = std::chrono::milliseconds(1000);
 
-// The library is built without libc, where its built-in default allocator
-// would be page-granular (see patches/ghostty/0002); route all allocations
-// through bionic malloc instead.
+// Without libc, libghostty's default allocator on Android is Zig's page
+// allocator (patches/ghostty/0002): every allocation rounds up to a page.
 void* mallocAlloc(void*, size_t len, uint8_t alignment, uintptr_t) {
   void* ptr = nullptr;
   const size_t align = alignment < sizeof(void*) ? sizeof(void*) : alignment;
@@ -121,10 +76,6 @@ constexpr GhosttyAllocatorVtable kMallocVtable = {
     &mallocAlloc, &mallocResize, &mallocRemap, &mallocFree};
 constexpr GhosttyAllocator kMallocAllocator = {nullptr, &kMallocVtable};
 
-// PNG decoding for the Kitty graphics protocol goes through
-// android.graphics.BitmapFactory; resolved in JNI_OnLoad. The decode
-// callback runs during vt_write, which is always on the main (Java)
-// thread, so GetEnv succeeds without attaching.
 JavaVM* gJavaVm = nullptr;
 jclass gBitmapFactoryClass = nullptr;
 jmethodID gDecodeByteArray = nullptr;
@@ -180,8 +131,6 @@ bool decodePngCallback(void*, const GhosttyAllocator* allocator, const uint8_t* 
       ghostty_free(allocator, outData, outLen);
       break;
     }
-    // Bitmap.getPixels yields unpremultiplied ARGB; the callback contract
-    // wants RGBA bytes.
     for (size_t i = 0; i < pixelCount; i++) {
       const auto argbPixel = static_cast<uint32_t>(pixels[i]);
       outData[i * 4] = (argbPixel >> 16) & 0xFF;
@@ -213,33 +162,20 @@ struct Session {
   GhosttyMouseEvent mouseEvent = nullptr;
   GhosttyKittyGraphicsPlacementIterator kittyIterator = nullptr;
   GhosttyKittyGraphicsVirtualPlacementIterator kittyVirtualIterator = nullptr;
-  // Grid size mirrored from create/resize; the mouse encoder needs it to map
-  // positions to cells.
   uint16_t cols = 0;
   uint16_t rows = 0;
-  // Cell pixel size mirrored from resize; XTWINOPS size reports need it.
   uint32_t cellWidthPx = 0;
   uint32_t cellHeightPx = 0;
   bool mouseButtonDown = false;
-  // Query responses emitted by the terminal during vt_write; forwarded to the
-  // remote shell by the caller after each write.
   std::vector<uint8_t> ptyOut;
-  // Effects observed during vt_write, drained by nativeTakeEventFlags.
   jint pendingEvents = 0;
-  // Latest OSC 52 clipboard write, drained by nativeTakeClipboard.
   std::string clipboardText;
-  // XTVERSION reply, set from the nativeCreate argument.
   std::string xtversion;
-  // Desktop notifications (OSC 9 / OSC 777), drained by nativeTakeNotification.
   std::deque<std::pair<std::string, std::string>> notifications;
-  // Latest progress report (OSC 9;4), read by nativeGetProgress.
   int32_t progressState = 0;
   int32_t progressPercent = -1;
-  // Current UI color scheme, reported for CSI ? 996 n queries.
   bool colorSchemeDark = true;
-  // Pending OSC 52 read request, drained by nativeTakeClipboardRead.
   int32_t clipboardReadLocation = -1;
-  // Mode 2026 deferral state; see nativeSnapshot.
   bool syncOutputActive = false;
   std::chrono::steady_clock::time_point syncOutputSince{};
 };
@@ -253,10 +189,6 @@ void bellCallback(GhosttyTerminal, void* userdata) {
   static_cast<Session*>(userdata)->pendingEvents |= kEventBell;
 }
 
-// The same attributes ghostty itself reports (termio/stream_handler.zig):
-// DA1 "CSI ? 62 ; 22 c", DA2 "CSI > 1 ; 10 ; 0 c". Programs like timg send
-// DA1 as the terminator after a Kitty graphics a=q query and treat a missing
-// reply as no graphics support.
 bool sizeCallback(GhosttyTerminal, void* userdata, GhosttySizeReportSize* out) {
   auto* session = static_cast<Session*>(userdata);
   if (session->cellWidthPx == 0 || session->cellHeightPx == 0) return false;
@@ -267,6 +199,8 @@ bool sizeCallback(GhosttyTerminal, void* userdata, GhosttySizeReportSize* out) {
   return true;
 }
 
+// The attributes ghostty itself reports (termio/stream_handler.zig): DA1
+// "CSI ? 62 ; 22 c", DA2 "CSI > 1 ; 10 ; 0 c".
 bool deviceAttributesCallback(GhosttyTerminal, void*, GhosttyDeviceAttributes* out) {
   out->primary.conformance_level = GHOSTTY_DA_CONFORMANCE_VT220;
   out->primary.features[0] = GHOSTTY_DA_FEATURE_ANSI_COLOR;
@@ -349,9 +283,6 @@ GhosttyClipboardWriteResult clipboardWriteCallback(GhosttyTerminal, void* userda
   return GHOSTTY_CLIPBOARD_WRITE_RESULT_UNSUPPORTED;
 }
 
-// DATA_TITLE / DATA_PWD return borrowed, non-null-terminated UTF-8; copy to a
-// byte array and decode Kotlin-side (NewStringUTF chokes on supplementary
-// characters).
 jbyteArray stringData(JNIEnv* env, Session* session, GhosttyTerminalData key) {
   GhosttyString str{};
   if (ghostty_terminal_get(session->term, key, &str) != GHOSTTY_SUCCESS || str.len == 0) {
@@ -376,8 +307,7 @@ bool viewportGridRef(Session* session, jint col, jint row, GhosttyGridRef* out) 
   return ghostty_terminal_grid_ref(session->term, point, out) == GHOSTTY_SUCCESS;
 }
 
-// Selection changes don't mark rows dirty for our snapshot; force a full
-// re-emit so the per-row selection ranges refresh everywhere.
+// ghostty's Screen.select does not mark the selected rows dirty.
 void markRenderDirtyFull(Session* session) {
   GhosttyRenderStateDirty full = GHOSTTY_RENDER_STATE_DIRTY_FULL;
   ghostty_render_state_set(session->renderState, GHOSTTY_RENDER_STATE_OPTION_DIRTY, &full);
@@ -397,8 +327,6 @@ int32_t argb(GhosttyColorRgb color) {
                               (static_cast<uint32_t>(color.g) << 8) | color.b);
 }
 
-// Parses a color in ghostty config syntax (hex with or without '#', X11
-// names, rgb:/rgbi: forms). Returns false on null or invalid input.
 bool parseColor(JNIEnv* env, jstring str, GhosttyColorRgb* out) {
   if (str == nullptr) return false;
   const char* utf = env->GetStringUTFChars(str, nullptr);
@@ -411,7 +339,6 @@ bool parseColor(JNIEnv* env, jstring str, GhosttyColorRgb* out) {
   return valid;
 }
 
-// Reads a DEC private mode; false when the query fails.
 bool modeSet(Session* session, GhosttyMode mode) {
   GhosttyTerminalModeConfig config{};
   config.mode = mode;
@@ -510,8 +437,6 @@ GhosttyKey mapKey(int32_t keyCode) {
   }
 }
 
-// KeyEvent meta state constants (android.view.KeyEvent.META_*); android/input.h
-// is unavailable without linking libandroid input, so mirror the values here.
 constexpr int32_t kMetaShiftOn = 0x1;
 constexpr int32_t kMetaShiftRightOn = 0x80;
 constexpr int32_t kMetaAltOn = 0x02;
@@ -545,7 +470,6 @@ void setTerminalOption(Session* session, GhosttyTerminalOption option, const voi
   }
 }
 
-// Append one codepoint as UTF-16 into out; returns units written (0 if full).
 uint32_t appendUtf16(uint32_t cp, uint16_t* out, uint32_t used, uint32_t cap) {
   if (cp < 0x10000) {
     if (used + 1 > cap) return 0;
@@ -652,8 +576,6 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeCreate(
   setTerminalOption(session, GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND, &bg, "color_background");
   setTerminalOption(session, GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND, &fg, "color_foreground");
 
-  // libghostty's built-in default is a non-blinking cursor; blink by default
-  // like the terminal apps users come from. DECSCUSR still overrides.
   const bool blinkDefault = true;
   setTerminalOption(session, GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_BLINK, &blinkDefault,
                     "default_cursor_blink");
@@ -708,7 +630,6 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeGetTitle(
   return stringData(env, session, GHOSTTY_TERMINAL_DATA_TITLE);
 }
 
-// Latest OSC 52 clipboard write as UTF-8, or null when none is pending.
 JNIEXPORT jbyteArray JNICALL
 Java_io_nekohasekai_ghostty_GhosttyVt_nativeTakeClipboard(
     JNIEnv* env, jobject, jlong handle) {
@@ -734,17 +655,9 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeResize(
   ghostty_terminal_resize(session->term, static_cast<uint16_t>(cols),
                           static_cast<uint16_t>(rows), static_cast<uint32_t>(cellWidthPx),
                           static_cast<uint32_t>(cellHeightPx));
-  // The renderer discards its bitmap on every resize; a same-grid resize
-  // (font-size change landing on identical cols/rows) would otherwise leave
-  // no dirty rows to repaint it with.
   markRenderDirtyFull(session);
 }
 
-// Sets the terminal's default colors (theme). Null arguments clear back to
-// the built-in defaults; invalid color strings are logged and skipped, like
-// ghostty does for bad config values. The palette array overrides entries
-// by index on top of ghostty's default 256-color palette; per-index OSC 4
-// overrides set by the running program are preserved by the terminal.
 JNIEXPORT void JNICALL
 Java_io_nekohasekai_ghostty_GhosttyVt_nativeSetTheme(
     JNIEnv* env, jobject, jlong handle, jstring foreground, jstring background,
@@ -779,8 +692,6 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeSetTheme(
   markRenderDirtyFull(session);
 }
 
-// Parses a color in ghostty config syntax to ARGB, or 0 when invalid (real
-// colors always carry 0xFF alpha, so 0 is never a valid result).
 JNIEXPORT jint JNICALL
 Java_io_nekohasekai_ghostty_GhosttyVt_nativeParseColor(
     JNIEnv* env, jobject, jstring color) {
@@ -809,8 +720,6 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeScrollToBottom(
   ghostty_terminal_scroll_viewport(session->term, behavior);
 }
 
-// Input-routing state for scroll gestures as a bitmask: 1 = alternate screen
-// active, 2 = mouse tracking enabled, 4 = SGR mouse format (mode 1006).
 JNIEXPORT jint JNICALL
 Java_io_nekohasekai_ghostty_GhosttyVt_nativeViewportState(
     JNIEnv*, jobject, jlong handle) {
@@ -839,8 +748,6 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeViewportState(
   return state;
 }
 
-// Packs the viewport scrollbar as [total, offset, len] rows, or null when
-// the query fails.
 JNIEXPORT jlongArray JNICALL
 Java_io_nekohasekai_ghostty_GhosttyVt_nativeScrollbar(
     JNIEnv* env, jobject, jlong handle) {
@@ -869,8 +776,6 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeSnapshot(
   const auto cap = static_cast<size_t>(env->GetDirectBufferCapacity(buffer));
   if (base == nullptr || cap < kHeaderBytes) return -1;
 
-  // Mode 2026 (synchronized output): hold the previous frame until the
-  // program ends the batch, bounded by kSyncOutputTimeout.
   if (modeSet(session, GHOSTTY_MODE_SYNC_OUTPUT)) {
     const auto now = std::chrono::steady_clock::now();
     if (!session->syncOutputActive) {
@@ -942,8 +847,6 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeSnapshot(
     return -1;
   }
 
-  // render.h leaves bold-as-bright to the caller: bold text on palette
-  // colors 0..7 renders with the bright variant 8..15.
   GhosttyColorRgb palette[256];
   const bool paletteValid =
       ghostty_render_state_get(session->renderState, GHOSTTY_RENDER_STATE_DATA_COLOR_PALETTE,
@@ -1018,7 +921,6 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeSnapshot(
         style.size = sizeof(style);
         ghostty_render_state_row_cells_get(session->cells,
                                            GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE, &style);
-        // SGR 5 (blink) renders as bold, like termux.
         if (style.bold || style.blink) flags |= kFlagBold;
         if (style.italic) flags |= kFlagItalic;
         if (style.faint) flags |= kFlagFaint;
@@ -1072,8 +974,6 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeSnapshot(
         ghostty_render_state_row_cells_get(session->cells,
                                            GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_BUF,
                                            codepoints);
-        // Kitty placeholder cells are painted by the image layer; emitting
-        // their codepoints would draw tofu over the image.
         if (codepoints[0] == kKittyPlaceholder) graphemeLen = 0;
         for (uint32_t i = 0; i < graphemeLen; i++) {
           const uint32_t needed = codepoints[i] >= 0x10000 ? 2 : 1;
@@ -1114,8 +1014,6 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeSnapshot(
     rowCount++;
   }
 
-  // On truncation all dirty state is kept so the retry snapshot iterates the
-  // rows again.
   if (!truncated) {
     ghostty_render_state_clean(session->renderState);
   }
@@ -1185,8 +1083,6 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeClearSelection(JNIEnv*, jobject, jlo
   markRenderDirtyFull(session);
 }
 
-// Formats a selection range (or the active selection when null) as plain,
-// unwrapped, trimmed UTF-8 — Ghostty's copy semantics.
 jbyteArray formatSelection(JNIEnv* env, Session* session, const GhosttySelection* selection) {
   GhosttyTerminalSelectionFormatOptions options{};
   options.size = sizeof(options);
@@ -1214,7 +1110,6 @@ jbyteArray formatSelection(JNIEnv* env, Session* session, const GhosttySelection
   return out;
 }
 
-// Returns the active selection as UTF-8, or null when there is no selection.
 JNIEXPORT jbyteArray JNICALL
 Java_io_nekohasekai_ghostty_GhosttyVt_nativeSelectionText(
     JNIEnv* env, jobject, jlong handle) {
@@ -1223,7 +1118,6 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeSelectionText(
   return formatSelection(env, session, nullptr);
 }
 
-// Returns the whole viewport as UTF-8, or null on failure.
 JNIEXPORT jbyteArray JNICALL
 Java_io_nekohasekai_ghostty_GhosttyVt_nativeViewportText(
     JNIEnv* env, jobject, jlong handle) {
@@ -1258,8 +1152,6 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeIsPasteSafe(
   return safe ? JNI_TRUE : JNI_FALSE;
 }
 
-// Encode clipboard text for the remote shell: strips unsafe control bytes and
-// wraps in bracketed-paste sequences when the terminal has mode 2004 set.
 JNIEXPORT jbyteArray JNICALL
 Java_io_nekohasekai_ghostty_GhosttyVt_nativeEncodePaste(
     JNIEnv* env, jobject, jlong handle, jbyteArray data) {
@@ -1278,7 +1170,6 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeEncodePaste(
     bracketed.value = false;
   }
 
-  // Bracketed wrapping adds 12 bytes; stripping/CR replacement is 1:1.
   std::vector<char> out(input.size() + 16);
   size_t written = 0;
   GhosttyResult result = ghostty_paste_encode(input.data(), input.size(), bracketed.value,
@@ -1303,8 +1194,6 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeEncodeKey(
   auto* session = fromHandle(handle);
   if (session == nullptr) return nullptr;
 
-  // Terminal modes (DECCKM, Kitty flags, ...) change as programs run; sync
-  // the encoder before every encode so arrows/keypad follow the active mode.
   ghostty_key_encoder_setopt_from_terminal(session->encoder, session->term);
 
   GhosttyKeyAction keyAction = GHOSTTY_KEY_ACTION_PRESS;
@@ -1342,7 +1231,6 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeEncodeKey(
     out = heapBuf.data();
   }
 
-  // The event borrows the utf8 pointer; clear it before releasing the array.
   ghostty_key_event_set_utf8(session->keyEvent, nullptr, 0);
   if (utf8Bytes != nullptr) env->ReleaseByteArrayElements(utf8, utf8Bytes, JNI_ABORT);
 
@@ -1354,10 +1242,6 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeEncodeKey(
   return outArray;
 }
 
-// Encode a mouse event ([action]/[button]: GhosttyVt.MOUSE_* values mirroring
-// GhosttyMouseAction/GhosttyMouseButton) at a viewport cell into the report
-// bytes for the remote shell, or null when the terminal's tracking mode
-// produces no report.
 JNIEXPORT jbyteArray JNICALL
 Java_io_nekohasekai_ghostty_GhosttyVt_nativeEncodeMouse(
     JNIEnv* env, jobject, jlong handle, jint action, jint button, jint col, jint row,
@@ -1365,11 +1249,8 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeEncodeMouse(
   auto* session = fromHandle(handle);
   if (session == nullptr) return nullptr;
 
-  // Tracking mode and output format change as programs run; sync before
-  // every encode. It does not sync size or the held-button state.
   ghostty_mouse_encoder_setopt_from_terminal(session->mouseEncoder, session->term);
 
-  // 1x1 cells make the surface-space position the cell position.
   GhosttyMouseEncoderSize size{};
   size.size = sizeof(size);
   size.screen_width = session->cols;
@@ -1412,18 +1293,6 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeEncodeMouse(
   return outArray;
 }
 
-// Visible Kitty graphics placements for the current viewport — pinned
-// placements plus unicode placeholder (virtual) runs, sorted by z ascending
-// (virtual runs carry z = 0) — or null when there are none. Flat records of
-// KITTY_PLACEMENT_LONGS (13) values each; must mirror the reader in
-// GhosttyTerminalView.updateKittyPlacements:
-//   [0] image id             [1] image generation stamp (cache key)
-//   [2] viewport column      [3] viewport row (either may be negative)
-//   [4] x pixel offset       [5] y pixel offset (within the origin cell)
-//   [6] dest width px        [7] dest height px
-//   [8] source x             [9] source y
-//   [10] source width        [11] source height
-//   [12] z-index
 JNIEXPORT jlongArray JNICALL
 Java_io_nekohasekai_ghostty_GhosttyVt_nativeKittyPlacements(
     JNIEnv* env, jobject, jlong handle) {
@@ -1489,9 +1358,6 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeKittyPlacements(
     records.push_back(record);
   }
 
-  // Virtual (unicode placeholder) placements: each run of placeholder cells
-  // in the viewport maps to a fragment of its image. They render like text,
-  // so they carry z = 0.
   if (ghostty_kitty_graphics_virtual_placement_iterator_begin(
           session->term, session->kittyVirtualIterator) == GHOSTTY_SUCCESS) {
     while (ghostty_kitty_graphics_virtual_placement_iterator_next(session->kittyVirtualIterator)) {
@@ -1532,8 +1398,6 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeKittyPlacements(
   return out;
 }
 
-// One stored Kitty image as [width, height, pixels...] ARGB ints, or null
-// when the image does not exist or its payload is still pending.
 JNIEXPORT jintArray JNICALL
 Java_io_nekohasekai_ghostty_GhosttyVt_nativeKittyImage(
     JNIEnv* env, jobject, jlong handle, jint imageId) {
@@ -1613,8 +1477,6 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeKittyImage(
   return out;
 }
 
-// The pwd set via OSC 7 / OSC 9 / OSC 1337 as raw UTF-8 (OSC 7 delivers a
-// file:// URI), or null when unset.
 JNIEXPORT jbyteArray JNICALL
 Java_io_nekohasekai_ghostty_GhosttyVt_nativeGetPwd(
     JNIEnv* env, jobject, jlong handle) {
@@ -1623,9 +1485,6 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeGetPwd(
   return stringData(env, session, GHOSTTY_TERMINAL_DATA_PWD);
 }
 
-// One queued desktop notification (OSC 9 / OSC 777) as
-// [4-byte LE title length][title UTF-8][body UTF-8], or null when the queue
-// is empty. Call repeatedly to drain.
 JNIEXPORT jbyteArray JNICALL
 Java_io_nekohasekai_ghostty_GhosttyVt_nativeTakeNotification(
     JNIEnv* env, jobject, jlong handle) {
@@ -1645,8 +1504,6 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeTakeNotification(
   return bytesToArray(env, packed.data(), packed.size());
 }
 
-// Latest progress report (OSC 9;4) as [state, percent]; state values mirror
-// GhosttyTerminalProgressState, percent is -1 when omitted.
 JNIEXPORT jintArray JNICALL
 Java_io_nekohasekai_ghostty_GhosttyVt_nativeGetProgress(
     JNIEnv* env, jobject, jlong handle) {
@@ -1659,9 +1516,6 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeGetProgress(
   return out;
 }
 
-// Records the UI color scheme for CSI ? 996 n queries. Returns the
-// unsolicited report bytes to send to the remote shell when mode 2031 is
-// set and the scheme changed, or null.
 JNIEXPORT jbyteArray JNICALL
 Java_io_nekohasekai_ghostty_GhosttyVt_nativeSetColorScheme(
     JNIEnv* env, jobject, jlong handle, jboolean dark) {
@@ -1682,8 +1536,6 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeSetColorScheme(
   return bytesToArray(env, buf, written);
 }
 
-// Pending OSC 52 read request as a GhosttyClipboardLocation value, or -1
-// when none; clears on read.
 JNIEXPORT jint JNICALL
 Java_io_nekohasekai_ghostty_GhosttyVt_nativeTakeClipboardRead(
     JNIEnv*, jobject, jlong handle) {
@@ -1694,16 +1546,11 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeTakeClipboardRead(
   return location;
 }
 
-// The OSC 8 hyperlink URI at a viewport cell as UTF-8, or null when the
-// cell carries no hyperlink.
 JNIEXPORT jbyteArray JNICALL
 Java_io_nekohasekai_ghostty_GhosttyVt_nativeHyperlinkAt(
     JNIEnv* env, jobject, jlong handle, jint col, jint row) {
   auto* session = fromHandle(handle);
   if (session == nullptr || col < 0 || row < 0) return nullptr;
-  // The link lookup borrows page memory through render-state pins; refresh
-  // them first. Dirty state accumulates in the render state until
-  // ghostty_render_state_clean, so the next snapshot still repaints.
   if (ghostty_render_state_update(session->renderState, session->term) != GHOSTTY_SUCCESS) {
     return nullptr;
   }
@@ -1716,8 +1563,6 @@ Java_io_nekohasekai_ghostty_GhosttyVt_nativeHyperlinkAt(
   return bytesToArray(env, reinterpret_cast<const char*>(uri.ptr), uri.len);
 }
 
-// Focus gained/lost report bytes for the remote shell, or null when mode
-// 1004 (focus event reporting) is not set.
 JNIEXPORT jbyteArray JNICALL
 Java_io_nekohasekai_ghostty_GhosttyVt_nativeEncodeFocus(
     JNIEnv* env, jobject, jlong handle, jboolean gained) {

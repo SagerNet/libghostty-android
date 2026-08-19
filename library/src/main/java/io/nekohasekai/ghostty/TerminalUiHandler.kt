@@ -3,14 +3,8 @@ package io.nekohasekai.ghostty
 import android.content.Context
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 
-/**
- * Decision points where the terminal shows UI. The default implementations
- * present MaterialAlertDialogBuilder dialogs; hosts override individual
- * methods on [GhosttyTerminalView.uiHandler] to replace them.
- */
 interface TerminalUiHandler {
 
-    /** Clipboard text about to be pasted failed the paste-safety check. */
     fun confirmUnsafePaste(context: Context, paste: () -> Unit) {
         MaterialAlertDialogBuilder(context)
             .setTitle(R.string.ghostty_paste_unsafe_title)
@@ -20,10 +14,7 @@ interface TerminalUiHandler {
             .show()
     }
 
-    /**
-     * The remote program requested the clipboard contents (OSC 52 read).
-     * [respond] must be called exactly once.
-     */
+    /** [respond] must be called exactly once. */
     fun requestClipboardRead(context: Context, respond: (approved: Boolean) -> Unit) {
         MaterialAlertDialogBuilder(context)
             .setTitle(R.string.ghostty_clipboard_read_title)
@@ -34,7 +25,6 @@ interface TerminalUiHandler {
             .show()
     }
 
-    /** A link was long-pressed. */
     fun showLinkMenu(context: Context, url: String, openLink: () -> Unit, copyUrl: () -> Unit) {
         MaterialAlertDialogBuilder(context)
             .setTitle(url)

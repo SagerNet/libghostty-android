@@ -43,28 +43,28 @@ class GhosttyVtSmokeTest {
 
             buffer.position(0)
             assertEquals("snapshot version", 2, buffer.int)
-            buffer.int // dirty kind
+            buffer.int
             val cols = buffer.int
             assertEquals(80, cols)
-            buffer.int // rows
-            buffer.int // default bg
+            buffer.int
+            buffer.int
             val defaultForeground = buffer.int
             buffer.position(15 * 4)
 
             val rows = HashMap<Int, Row>()
             repeat(rowCount) {
                 val rowIndex = buffer.int
-                buffer.int // selection start
-                buffer.int // selection end
+                buffer.int
+                buffer.int
                 val textUnits = buffer.int
                 val cells = ArrayList<Cell>(cols)
                 repeat(cols) {
                     val foreground = buffer.int
-                    buffer.int // background
+                    buffer.int
                     val textOffset = buffer.short.toInt() and 0xFFFF
                     val textLength = buffer.short.toInt() and 0xFFFF
                     val flags = buffer.short.toInt() and 0xFFFF
-                    buffer.short // underline style
+                    buffer.short
                     cells.add(Cell(foreground, textOffset, textLength, flags))
                 }
                 val text = CharArray(textUnits)

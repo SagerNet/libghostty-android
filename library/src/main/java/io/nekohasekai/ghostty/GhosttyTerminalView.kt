@@ -57,16 +57,13 @@ class GhosttyTerminalView @JvmOverloads constructor(
 ) : View(context, attrs) {
 
     interface Listener {
-        /** The font size changed through a pinch gesture. */
         fun onFontSizeChanged(view: GhosttyTerminalView, fontSizeSp: Float) {}
 
-        /** A key arrived after the session finished. */
         fun onFinishedSessionKey(view: GhosttyTerminalView) {}
     }
 
     var listener: Listener? = null
 
-    /** Sticky Ctrl/Alt state applied to keys and consumed on use, or null. */
     var extraKeysState: TerminalExtraKeysState? = null
 
     var uiHandler: TerminalUiHandler = object : TerminalUiHandler {}
@@ -133,22 +130,13 @@ class GhosttyTerminalView @JvmOverloads constructor(
         val belowText: Boolean,
     )
 
-    // Kitty graphics placements resolved for the last rendered frame, in
-    // draw order (z ascending). Rebuilt every frame so scrolling moves them
-    // without touching the dirty-row logic.
     private var kittyPlacements: List<KittyImagePlacement> = emptyList()
     private val kittyImagePaint = Paint(Paint.FILTER_BITMAP_FLAG)
 
-    // Keyed by the image generation stamp, which libghostty guarantees to be
-    // process-unique per image content, so retransmissions under a reused
-    // image id never hit a stale entry.
     private val kittyImageCache = object : LruCache<Long, Bitmap>(KITTY_IMAGE_CACHE_BYTES) {
         override fun sizeOf(key: Long, value: Bitmap): Int = value.byteCount
     }
 
-    // Per-cell state of the last drawn frame, kept so drawCursor can invert
-    // the glyph under a block cursor. Indexed rowIndex * cols + col; flags
-    // pack the wire flags in the low 16 bits and the underline style above.
     private var gridForeground = IntArray(0)
     private var gridBackground = IntArray(0)
     private var gridTextOffset = IntArray(0)
@@ -359,11 +347,8 @@ class GhosttyTerminalView @JvmOverloads constructor(
             ): Boolean {
                 if (scaleDetector.isInProgress) return false
                 val state = session?.withTerminal { GhosttyVt.nativeViewportState(it) } ?: return false
-                // Finger up (negative velocity) scrolls content down: invert.
                 flingLastY = 0
                 if (state and (GhosttyVt.VIEWPORT_ALTERNATE_SCREEN or GhosttyVt.VIEWPORT_MOUSE_TRACKING) != 0) {
-                    // Full-screen programs get a bounded burst of wheel/arrow
-                    // steps instead of a free fling.
                     val range = rows / 2 * cellHeight
                     scroller.fling(
                         0,
@@ -454,8 +439,6 @@ class GhosttyTerminalView @JvmOverloads constructor(
         session?.sendRawInput(bytes)
     }
 
-    // Scrollback only exists on the primary screen; full-screen programs
-    // expect wheel events (when they track the mouse) or arrow keys instead.
     private fun scrollContent(handle: Long, deltaRows: Int, col: Int, row: Int) {
         val state = GhosttyVt.nativeViewportState(handle)
         if (state and GhosttyVt.VIEWPORT_MOUSE_TRACKING != 0) {
@@ -501,9 +484,8 @@ class GhosttyTerminalView @JvmOverloads constructor(
         val meta = extraKeysState?.currentMetaState() ?: 0
         if (meta != 0 && text.length == 1) {
             val char = text[0]
-            // The utf8 argument lets ghostty's ctrlSeq resolve characters
-            // that have no keycode mapping (Ctrl+_, Ctrl+| from the
-            // symbols bar).
+            // ghostty's ctrlSeq (src/input/key_encode.zig) maps a one-byte
+            // utf8 argument to its C0 byte when the logical key has none.
             val bytes = session?.withTerminal { handle ->
                 GhosttyVt.nativeEncodeKey(
                     handle,
@@ -588,9 +570,6 @@ class GhosttyTerminalView @JvmOverloads constructor(
                 bitmapCanvas?.drawColor(defaultBackground)
             }
         }
-        // The C++ side caps per-cell text at 32 UTF-16 units; reserving that
-        // much per cell would be 8x a realistic frame, so reserve a small
-        // amount and let the truncated-retry path absorb rare overflow.
         val capacity = HEADER_BYTES +
             rows * (ROW_HEADER_BYTES + cols * CELL_RECORD_BYTES + cols * TEXT_UNITS_PER_CELL * 2 + 4)
         if ((snapshotBuffer?.capacity() ?: 0) < capacity) {
@@ -630,8 +609,6 @@ class GhosttyTerminalView @JvmOverloads constructor(
     private fun renderFrameLocked(handle: Long, buffer: ByteBuffer, canvas: Canvas) {
         val rowCount = GhosttyVt.nativeSnapshot(handle, buffer)
         if (rowCount == SNAPSHOT_SYNC_DEFERRED) {
-            // Mode 2026: the previous frame stays up until the program ends
-            // the batch; poll in case its terminating write is already in.
             removeCallbacks(syncRetryRunnable)
             postDelayed(syncRetryRunnable, SYNC_OUTPUT_RETRY_MS)
             return
@@ -643,7 +620,6 @@ class GhosttyTerminalView @JvmOverloads constructor(
             scrollbarLen = scrollbar[2]
         }
 
-        // Header layout: see ghostty_jni.cpp.
         buffer.position(0)
         val version = buffer.int
         if (version != SNAPSHOT_VERSION) {
@@ -652,14 +628,14 @@ class GhosttyTerminalView @JvmOverloads constructor(
         }
         val dirtyKind = buffer.int
         val snapshotCols = buffer.int
-        buffer.int // rows
+        buffer.int
         defaultBackground = buffer.int
         defaultForeground = buffer.int
         cursorX = buffer.int
         cursorY = buffer.int
         cursorStyle = buffer.int
         cursorVisible = buffer.int != 0
-        buffer.int // row record count
+        buffer.int
         cursorBlinks = buffer.int != 0
         cursorColor = buffer.int
         val truncated = buffer.int != 0
@@ -792,7 +768,6 @@ class GhosttyTerminalView @JvmOverloads constructor(
         }
     }
 
-    // Record layout: see nativeKittyPlacements in ghostty_jni.cpp.
     private fun updateKittyPlacements(handle: Long) {
         val data = GhosttyVt.nativeKittyPlacements(handle)
         if (data == null) {
@@ -845,9 +820,6 @@ class GhosttyTerminalView @JvmOverloads constructor(
         canvas.restoreToCount(saved)
     }
 
-    // The frame bitmap merges cell backgrounds and glyphs, so a below-text
-    // (z < 0) image is drawn over it and the covered glyphs are painted
-    // again on top.
     private fun overdrawGlyphsForBelowTextImages(canvas: Canvas) {
         if (gridForeground.size != rows * cols) return
         for (placement in kittyPlacements) {
@@ -1101,8 +1073,6 @@ class GhosttyTerminalView @JvmOverloads constructor(
         session?.withTerminal { handle ->
             val col = (x / cellWidth).toInt().coerceIn(0, cols - 1)
             val row = ((y / cellHeight).toInt() - dragBiasRows).coerceIn(0, rows - 1)
-            // Dragging into the edge rows keeps scrolling the viewport so the
-            // selection can extend beyond it.
             val edgeDelta = when {
                 row == 0 -> -1
                 row == rows - 1 -> 1
@@ -1113,8 +1083,6 @@ class GhosttyTerminalView @JvmOverloads constructor(
                 GhosttyVt.nativeScroll(handle, edgeDelta)
                 val after = GhosttyVt.nativeScrollbar(handle)?.get(1)
                 if (after != null && after != before) {
-                    // The anchor is expressed in viewport coordinates; shift it to
-                    // keep it on the same content row.
                     dragAnchorRow = (dragAnchorRow - edgeDelta).coerceIn(0, rows - 1)
                     lastScrollActivityAt = SystemClock.uptimeMillis()
                 }
@@ -1249,8 +1217,6 @@ class GhosttyTerminalView @JvmOverloads constructor(
         drawJumpToBottomChip(canvas)
     }
 
-    // Preedit text from the IME, drawn inverted at the cursor so composition
-    // is visible before it commits.
     private fun drawComposingText(canvas: Canvas) {
         val composing = composingText
         if (composing.isNullOrEmpty() || cursorX < 0 || cursorY < 0) return
@@ -1265,7 +1231,6 @@ class GhosttyTerminalView @JvmOverloads constructor(
         canvas.drawText(composing, left, top + baseline, textPaint)
     }
 
-    // A padlock beside the cursor while the shell reports password input.
     private fun drawPasswordIndicator(canvas: Canvas) {
         if (!passwordInput || cursorX < 0 || cursorY < 0) return
         val size = cellHeight * 0.5f
@@ -1371,8 +1336,6 @@ class GhosttyTerminalView @JvmOverloads constructor(
         }
     }
 
-    // Inverts the cell under a block cursor: fills with the cursor color and
-    // re-draws the glyph in the cell's background color.
     private fun drawBlockCursor(canvas: Canvas) {
         cursorPaint.style = Paint.Style.FILL
         if (cursorY >= rows || cursorX >= cols || gridForeground.size != rows * cols) {
@@ -1381,8 +1344,6 @@ class GhosttyTerminalView @JvmOverloads constructor(
             return
         }
         val gridBase = cursorY * cols
-        // On the spacer tail of a wide character the glyph starts one cell
-        // to the left; invert both cells.
         var startCol = cursorX
         if (gridFlags[gridBase + startCol] and FLAG_SPACER != 0 && startCol > 0 &&
             gridFlags[gridBase + startCol - 1] and FLAG_WIDE != 0
@@ -1458,9 +1419,6 @@ class GhosttyTerminalView @JvmOverloads constructor(
                     actionMode?.invalidateContentRect()
                 }
                 MotionEvent.ACTION_MOVE -> if (draggingHandle != HANDLE_NONE) {
-                    // After a long-press word selection, ignore movement until
-                    // it exceeds the touch slop so jitter cannot collapse the
-                    // selected word.
                     if (!dragPastSlop) {
                         if (hypot(event.x - longPressX, event.y - longPressY) < touchSlop) return true
                         dragPastSlop = true
@@ -1478,9 +1436,6 @@ class GhosttyTerminalView @JvmOverloads constructor(
         return gestureDetector.onTouchEvent(event) || super.onTouchEvent(event)
     }
 
-    // Right/middle mouse buttons: reported to a mouse-tracking program;
-    // otherwise right-click opens the copy/paste menu and middle-click
-    // pastes.
     private fun handleSecondaryMouse(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
@@ -1538,8 +1493,8 @@ class GhosttyTerminalView @JvmOverloads constructor(
     override fun onCheckIsTextEditor(): Boolean = true
 
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
-        // Visible-password + no-suggestions keeps IMEs in send-as-you-type mode
-        // (no autocorrect batching) while still allowing CJK composition.
+        // IMEs send each keystroke of a visible-password field as it is typed
+        // instead of batching autocorrect, and still compose CJK input.
         outAttrs.inputType = InputType.TYPE_CLASS_TEXT or
             InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD or
             InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
@@ -1599,8 +1554,6 @@ class GhosttyTerminalView @JvmOverloads constructor(
         }
         val stickyMeta = if (action == 1 && !isModifierKey) extraKeysState?.currentMetaState() ?: 0 else 0
         val metaState = event.metaState or stickyMeta
-        // Ctrl/meta are handled by the encoder; left Alt is consumed as an
-        // escape prefix while right Alt stays available for AltGr characters.
         var unicodeMask = KeyEvent.META_CTRL_MASK or KeyEvent.META_META_MASK
         if (metaState and KeyEvent.META_ALT_RIGHT_ON == 0) {
             unicodeMask = unicodeMask or KeyEvent.META_ALT_ON or KeyEvent.META_ALT_LEFT_ON
@@ -1635,8 +1588,6 @@ class GhosttyTerminalView @JvmOverloads constructor(
         return true
     }
 
-    // Plain-text URL under a cell, for rows without OSC 8 hyperlinks. Only
-    // the pressed row is scanned; a soft-wrapped URL matches its first row.
     private fun detectUrlAt(row: Int, col: Int): String? {
         if (row >= rows || gridForeground.size != rows * cols || row >= gridRowChars.size) return null
         val rowChars = gridRowChars[row]
@@ -1744,7 +1695,6 @@ class GhosttyTerminalView @JvmOverloads constructor(
         const val ACCESSIBILITY_TEXT_DELAY_MS = 500L
         const val KITTY_IMAGE_CACHE_BYTES = 64 * 1024 * 1024
 
-        // Snapshot wire format; must mirror ghostty_jni.cpp.
         const val SNAPSHOT_VERSION = 2
         const val HEADER_BYTES = 60
         const val ROW_HEADER_BYTES = 16
@@ -1770,7 +1720,6 @@ class GhosttyTerminalView @JvmOverloads constructor(
         const val FLAG_FG_DEFAULT = 1 shl 9
         const val FLAG_BG_NONE = 1 shl 10
 
-        // GhosttySgrUnderline values carried in the cell record pad.
         const val UNDERLINE_DOUBLE = 2
         const val UNDERLINE_CURLY = 3
         const val UNDERLINE_DOTTED = 4

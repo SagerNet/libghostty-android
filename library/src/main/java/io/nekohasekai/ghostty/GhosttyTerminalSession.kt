@@ -61,11 +61,6 @@ class GhosttyTerminalSession(
     }
         private set
 
-    /**
-     * Runs [block] with the live native handle under [terminalAccess], or
-     * returns null after free. Serializes the UI thread against
-     * [feedOutput], which processes output on the transport's thread.
-     */
     internal inline fun <T> withTerminal(block: (Long) -> T): T? = synchronized(terminalAccess) {
         if (handle == 0L) null else block(handle)
     }
@@ -73,7 +68,6 @@ class GhosttyTerminalSession(
     internal val terminalAlive: Boolean
         get() = synchronized(terminalAccess) { handle != 0L }
 
-    /** Whether a terminal view currently displays this session. */
     val hasAttachedView: Boolean
         get() = attachedView != null
 
@@ -103,15 +97,14 @@ class GhosttyTerminalSession(
     var title: String? = null
         private set
 
-    /** Working directory reported via OSC 7 as a local path, or null. */
     var workingDirectory: String? = null
         private set
 
-    /** GhosttyVt.PROGRESS_STATE_* of the latest OSC 9;4 report. */
+    /** A GhosttyVt.PROGRESS_STATE_* value. */
     var progressState = GhosttyVt.PROGRESS_STATE_REMOVE
         private set
 
-    /** Progress percentage 0..100, or -1 when the report omitted it. */
+    /** 0..100, or -1 when the report omitted it. */
     var progressPercent = -1
         private set
 
@@ -141,9 +134,8 @@ class GhosttyTerminalSession(
         }
     }
 
-    // Runs on the transport's thread: query replies (kitty a=q, DA, XTWINOPS)
-    // must go back without waiting for the main looper — feature probes like
-    // timg's give up within a small time budget.
+    // timg abandons its kitty graphics probe when the DA1 reply does not
+    // arrive within a small time budget.
     fun feedOutput(data: ByteArray) {
         val response = withTerminal { GhosttyVt.nativeWrite(it, data) }
         if (response != null && response.isNotEmpty()) {
@@ -209,7 +201,6 @@ class GhosttyTerminalSession(
         }
     }
 
-    // OSC 7 delivers a file:// URI; OSC 9 / OSC 1337 deliver a bare path.
     private fun pwdToPath(raw: String): String? {
         if (raw.isEmpty()) return null
         if (!raw.startsWith("file://")) return raw
@@ -220,18 +211,11 @@ class GhosttyTerminalSession(
             .getOrNull()
     }
 
-    /**
-     * Report the UI color scheme for CSI ? 996 n queries; sends the mode-2031
-     * change report when the running program enabled it.
-     */
     fun setColorScheme(dark: Boolean) {
         val report = withTerminal { GhosttyVt.nativeSetColorScheme(it, dark) }
         if (report != null && report.isNotEmpty()) sendRawInput(report)
     }
 
-    // OSC 52 read: the remote program asked for the clipboard contents.
-    // Denied (or view-less) requests answer with an empty payload so the
-    // program completes instead of waiting.
     private fun handleClipboardRead(location: Int) {
         if (clipboardReadApproved) {
             respondClipboardRead(location, readClipboardText())
@@ -269,22 +253,16 @@ class GhosttyTerminalSession(
         sendRawInput("\u001b]52;$kind;$encoded\u0007".toByteArray(Charsets.ISO_8859_1))
     }
 
-    /** Report window focus to the remote shell when mode 1004 is set. */
     fun sendFocus(gained: Boolean) {
         if (isFinished) return
         val report = withTerminal { GhosttyVt.nativeEncodeFocus(it, gained) }
         if (report != null && report.isNotEmpty()) sendRawInput(report)
     }
 
-    /** Send keyboard/IME text; LF becomes CR and bracketed-paste markers are stripped. */
     fun sendTypedInput(data: ByteArray) {
         transportSend(sanitizeInput(data))
     }
 
-    /**
-     * Send protocol bytes (key/mouse-encoder output, VT query responses,
-     * encoded paste) byte-exact.
-     */
     fun sendRawInput(data: ByteArray) {
         transportSend(data)
     }
@@ -306,9 +284,6 @@ class GhosttyTerminalSession(
     }
 
     fun resize(columns: Int, rows: Int, cellWidthPixels: Int, cellHeightPixels: Int) {
-        // A pixel-only change (font-size change landing on the same grid)
-        // still needs a window change: programs derive the cell pixel size
-        // for Kitty graphics from the pixel fields of TIOCGWINSZ.
         val changed = columns != lastColumns || rows != lastRows ||
             cellWidthPixels != lastCellWidthPixels || cellHeightPixels != lastCellHeightPixels
         lastColumns = columns
@@ -339,11 +314,6 @@ class GhosttyTerminalSession(
         attachedView?.onSessionUpdated()
     }
 
-    /**
-     * Mark the host-managed process as exited: an exit notice is written into
-     * the terminal and [Listener.onFinished] fires. The session stays
-     * displayable until [close].
-     */
     fun finish(exitCode: Int = 0, signal: String? = null, errorMessage: String? = null) {
         this.exitCode = exitCode
         isFinished = true

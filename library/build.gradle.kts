@@ -21,7 +21,6 @@ android {
         }
         externalNativeBuild {
             cmake {
-                // Outputs of GhosttyBuildPlugin.
                 arguments += "-DGHOSTTY_VT_DIR=${layout.buildDirectory.dir("ghostty-vt").get().asFile.absolutePath}"
             }
         }
@@ -29,7 +28,6 @@ android {
 
     sourceSets {
         getByName("main") {
-            // Outputs of GhosttyBuildPlugin.
             assets.directories.add(layout.buildDirectory.dir("ghostty-assets").get().asFile.absolutePath)
         }
     }
@@ -60,7 +58,6 @@ dependencies {
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
 }
 
-// Builds libghostty-vt from source and installs the ghostty theme assets.
 apply<GhosttyBuildPlugin>()
 
 mavenPublishing {

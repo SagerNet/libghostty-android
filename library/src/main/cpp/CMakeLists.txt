@@ -12,7 +12,6 @@ add_library(ghostty_android SHARED ghostty_jni.cpp)
 
 target_include_directories(ghostty_android PRIVATE
     ${GHOSTTY_VT_DIR}/include)
-# Static linking: GHOSTTY_API must stay a no-op (see ghostty/vt/types.h).
 target_compile_definitions(ghostty_android PRIVATE GHOSTTY_STATIC)
 target_compile_options(ghostty_android PRIVATE -Wall -Wextra -fvisibility=hidden)
 target_link_options(ghostty_android PRIVATE -Wl,-z,max-page-size=16384)
