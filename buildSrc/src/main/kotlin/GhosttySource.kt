@@ -2,9 +2,11 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import javax.inject.Inject
 import org.gradle.api.DefaultTask
+import org.gradle.api.GradleException
 import org.gradle.api.Project
 import org.gradle.api.file.ConfigurableFileCollection
 import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.provider.ListProperty
 import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputFiles
@@ -18,8 +20,8 @@ import org.gradle.process.ExecOperations
 abstract class GhosttySourceTask @Inject constructor(
     private val execOperations: ExecOperations,
 ) : DefaultTask() {
-    @get:Input
-    abstract val repository: Property<String>
+    @get:Internal
+    abstract val repositories: ListProperty<String>
 
     @get:Input
     abstract val commit: Property<String>
@@ -67,13 +69,28 @@ abstract class GhosttySourceTask @Inject constructor(
             source.deleteRecursively()
             source.mkdirs()
             git(source, "init", "-q")
-            git(source, "remote", "add", "origin", repository.get())
         }
-        git(source, "fetch", "--depth", "1", "origin", commit.get())
+        fetch(source)
         git(source, "checkout", "-qf", commit.get())
         git(source, "clean", "-qfd")
         for (patch in patches.files.sortedBy { it.name }) {
             git(source, "apply", patch.absolutePath)
+        }
+    }
+
+    private fun fetch(source: File) {
+        val repositories = repositories.get()
+        for ((index, repository) in repositories.withIndex()) {
+            val last = index == repositories.lastIndex
+            val result = execOperations.exec {
+                workingDir = source
+                commandLine("git", "fetch", "--depth", "1", repository, commit.get())
+                if (!last) {
+                    errorOutput = ByteArrayOutputStream()
+                    isIgnoreExitValue = true
+                }
+            }
+            if (result.exitValue == 0) return
         }
     }
 
@@ -85,8 +102,19 @@ abstract class GhosttySourceTask @Inject constructor(
     }
 }
 
+const val GHOSTTY_SUBMODULE = "ghostty"
+
+fun ghosttyCommit(project: Project): String {
+    val entry = project.providers.exec {
+        workingDir = project.rootDir
+        commandLine("git", "ls-files", "-s", GHOSTTY_SUBMODULE)
+    }.standardOutput.asText.get().trim()
+    return entry.split(Regex("\\s+")).getOrNull(1)
+        ?: throw GradleException("$GHOSTTY_SUBMODULE is not registered as a submodule")
+}
+
 internal class GhosttyEnv(project: Project) {
-    val commit: String = project.rootProject.file("GHOSTTY_REF").readText().trim()
+    val commit: String = ghosttyCommit(project)
     val patches = project.rootProject.layout.projectDirectory.dir("patches/ghostty")
         .asFileTree.matching {
             include("*.patch")
@@ -99,7 +127,12 @@ internal class GhosttyEnv(project: Project) {
             tasks.named("ghosttySource")
         } else {
             tasks.register<GhosttySourceTask>("ghosttySource") {
-                repository.set("https://github.com/ghostty-org/ghostty.git")
+                repositories.set(
+                    listOf(
+                        project.rootProject.file(GHOSTTY_SUBMODULE).absolutePath,
+                        "https://github.com/ghostty-org/ghostty.git",
+                    )
+                )
                 commit.set(this@GhosttyEnv.commit)
                 patches.from(this@GhosttyEnv.patches)
                 sourceDir.set(this@GhosttyEnv.sourceDir)

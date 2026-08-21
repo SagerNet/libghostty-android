@@ -24,6 +24,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          submodules: true
       - uses: ./.github/actions/setup
         with:
           zig-version: ${{ env.ZIG_VERSION }}
@@ -53,6 +55,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          submodules: true
       - uses: ./.github/actions/setup
         with:
           zig-version: ${{ env.ZIG_VERSION }}
@@ -101,6 +105,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          submodules: true
       - name: Check tag matches VERSION_NAME
         run: |
           version=$(grep '^VERSION_NAME=' gradle.properties | cut -d= -f2)
@@ -123,6 +129,6 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             library*/build/outputs/aar/*-release.aar \
             --title "$GITHUB_REF_NAME" \
-            --notes "ghostty commit: $(cat GHOSTTY_REF)"
+            --notes "ghostty commit: $(git ls-files -s ghostty | awk '{print $2}')"
         env:
           GH_TOKEN: ${{ github.token }}

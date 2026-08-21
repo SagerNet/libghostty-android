@@ -41,6 +41,6 @@ mavenPublishing {
     publishToMavenCentral()
     signAllPublications()
     pom {
-        properties.set(mapOf("ghostty.commit" to rootProject.file("GHOSTTY_REF").readText().trim()))
+        properties.set(mapOf("ghostty.commit" to ghosttyCommit(project)))
     }
 }

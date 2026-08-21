@@ -13,13 +13,38 @@ runs:
       with:
         distribution: temurin
         java-version: 17
+    - name: Check zig against ghostty
+      shell: bash
+      env:
+        ZIG_VERSION: ${{ inputs.zig-version }}
+      run: |
+        minimum=$(sed -n -E 's/^[[:space:]]*\.minimum_zig_version = "([^"]+)".*/\1/p' ghostty/build.zig.zon)
+        if [ -z "$minimum" ]; then
+          echo "minimum_zig_version not found in ghostty/build.zig.zon" >&2
+          exit 1
+        fi
+        case "$minimum" in
+          *-*)
+            echo "ghostty requires the zig development build $minimum; pick a ZIG_VERSION by hand" >&2
+            exit 1
+            ;;
+        esac
+        if [ "$(printf '%s\n%s\n' "$minimum" "$ZIG_VERSION" | sort -V | head -1)" != "$minimum" ]; then
+          echo "ghostty requires zig $minimum, ZIG_VERSION is $ZIG_VERSION" >&2
+          exit 1
+        fi
     - uses: mlugg/setup-zig@v2
       with:
         version: ${{ inputs.zig-version }}
+    - name: Read the pinned ghostty commit
+      id: ghostty
+      shell: bash
+      run: |
+        echo "commit=$(git ls-files -s ghostty | awk '{print $2}')" >> "$GITHUB_OUTPUT"
     - name: Cache libghostty-vt objects
       uses: actions/cache@v6
       with:
         path: build/ghostty/zig-cache
-        key: ghostty-vt-${{ inputs.zig-version }}-${{ hashFiles('GHOSTTY_REF', 'patches/ghostty/*.patch') }}
+        key: ghostty-vt-${{ inputs.zig-version }}-${{ steps.ghostty.outputs.commit }}-${{ hashFiles('patches/ghostty/*.patch') }}
         restore-keys: ghostty-vt-${{ inputs.zig-version }}-
     - uses: gradle/actions/setup-gradle@v5

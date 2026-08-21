@@ -38,7 +38,7 @@ jobs:
           else
             head=$(git ls-remote https://github.com/ghostty-org/ghostty.git refs/heads/main | cut -f1)
           fi
-          current=$(cat GHOSTTY_REF)
+          current=$(git ls-files -s ghostty | awk '{print $2}')
           echo "head=$head" >> "$GITHUB_OUTPUT"
           echo "short=${head:0:9}" >> "$GITHUB_OUTPUT"
           if [ "$head" = "$current" ]; then
@@ -53,8 +53,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Bump GHOSTTY_REF
-        run: printf '%s\n' "${{ needs.resolve.outputs.head }}" > GHOSTTY_REF
+        with:
+          submodules: true
+      - name: Bump the ghostty submodule
+        env:
+          HEAD_COMMIT: ${{ needs.resolve.outputs.head }}
+        run: |
+          git -C ghostty fetch --depth 1 origin "$HEAD_COMMIT"
+          git -C ghostty checkout -qf "$HEAD_COMMIT"
+          git add ghostty
       - uses: ./.github/actions/setup
         with:
           zig-version: ${{ env.ZIG_VERSION }}
@@ -63,10 +70,20 @@ jobs:
       - name: Check patch assumptions
         run: scripts/check-patch-assumptions.sh build/ghostty/source
       - name: Create pull request
-        uses: peter-evans/create-pull-request@v8
-        with:
-          branch: update-ghostty
-          commit-message: "Update ghostty to ${{ needs.resolve.outputs.short }}"
-          title: "Update ghostty to ${{ needs.resolve.outputs.short }}"
-          body: https://github.com/ghostty-org/ghostty/commit/${{ needs.resolve.outputs.head }}
-          add-paths: GHOSTTY_REF
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_COMMIT: ${{ needs.resolve.outputs.head }}
+          SHORT: ${{ needs.resolve.outputs.short }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c update-ghostty
+          git commit -m "Update ghostty to $SHORT" ghostty
+          git push -f origin update-ghostty
+          title="Update ghostty to $SHORT"
+          body="https://github.com/ghostty-org/ghostty/commit/$HEAD_COMMIT"
+          if gh pr view update-ghostty --json number >/dev/null 2>&1; then
+            gh pr edit update-ghostty --title "$title" --body "$body"
+          else
+            gh pr create --base main --head update-ghostty --title "$title" --body "$body"
+          fi
