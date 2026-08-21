@@ -1,8 +1,8 @@
 diff --git a/src/terminal/kitty/graphics_exec.zig b/src/terminal/kitty/graphics_exec.zig
-index 03a0882..cf92a51 100644
+index e27500aab..da22d9e52 100644
 --- a/src/terminal/kitty/graphics_exec.zig
 +++ b/src/terminal/kitty/graphics_exec.zig
-@@ -325,24 +325,43 @@ fn loadAndAddImage(
+@@ -440,24 +440,40 @@ fn loadAndAddImage(
      const storage = &terminal.screens.active.kitty_images;
  
      // Determine our image. This also handles chunking and early exit.
@@ -49,15 +49,12 @@ index 03a0882..cf92a51 100644
 +            }
 +
 +            log.warn("dropping interrupted chunked image transmission id={}", .{loading_ptr.image.id});
-+            loading_ptr.deinit(alloc);
-+            alloc.destroy(loading_ptr);
++            loading_ptr.destroy(alloc);
              storage.loading = null;
          }
  
 -        break :loading loading.*;
--    } else try .init(io, alloc, cmd, storage.image_limits);
-+        break :loading try .init(io, alloc, cmd, storage.image_limits);
-+    };
- 
-     // We only want to deinit on error. If we're chunking, then we don't
-     // want to deinit at all. If we're not chunking, then we'll deinit
+-    } else loading: {
+         // Reusing a specific image ID deletes the old image and all of its
+         // placements when the new transmission begins, not when it completes.
+         if (t.image_id > 0) {
