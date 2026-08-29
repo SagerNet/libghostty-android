@@ -101,22 +101,24 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      VERSION: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v7
         with:
           submodules: true
-      - name: Check tag matches VERSION_NAME
+      - name: Check the tag
         run: |
-          version=$(grep '^VERSION_NAME=' gradle.properties | cut -d= -f2)
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "tag $GITHUB_REF_NAME does not match VERSION_NAME=$version" >&2
+          if ! [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || [[ "$VERSION" == *-SNAPSHOT ]]; then
+            echo "tag $VERSION is not a release version" >&2
             exit 1
           fi
+          echo "VERSION=${VERSION#v}" >> "$GITHUB_ENV"
       - uses: ./.github/actions/setup
         with:
           zig-version: ${{ env.ZIG_VERSION }}
       - name: Publish to Maven Central
-        run: ./gradlew publishAndReleaseToMavenCentral
+        run: ./gradlew publishAndReleaseToMavenCentral -PVERSION_NAME="$VERSION"
         env:
           ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
           ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
@@ -124,9 +126,14 @@ jobs:
           ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_KEY_PASSWORD }}
       - name: Create GitHub release
         run: |
+          prerelease=()
+          case "$VERSION" in
+            *-*) prerelease=(--prerelease) ;;
+          esac
           gh release create "$GITHUB_REF_NAME" \
             library*/build/outputs/aar/*-release.aar \
             --title "$GITHUB_REF_NAME" \
-            --notes "ghostty commit: $(git ls-files -s ghostty | awk '{print $2}')"
+            --notes "ghostty commit: $(git ls-files -s ghostty | awk '{print $2}')" \
+            "${prerelease[@]}"
         env:
           GH_TOKEN: ${{ github.token }}
