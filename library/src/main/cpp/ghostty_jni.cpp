@@ -46,8 +46,7 @@ constexpr jint kEventClipboard = 1 << 2;
 constexpr jint kEventPwd = 1 << 3;
 constexpr jint kEventNotification = 1 << 4;
 constexpr jint kEventProgress = 1 << 5;
-constexpr jint kEventClipboardRead = 1 << 6;
-constexpr jint kEventColors = 1 << 7;
+constexpr jint kEventColors = 1 << 6;
 
 constexpr uint32_t kKittyPlaceholder = 0x10EEEE;
 
@@ -86,6 +85,9 @@ jmethodID gBitmapGetWidth = nullptr;
 jmethodID gBitmapGetHeight = nullptr;
 jmethodID gBitmapGetPixels = nullptr;
 jmethodID gBitmapRecycle = nullptr;
+jclass gSessionClass = nullptr;
+jmethodID gClipboardHasText = nullptr;
+jmethodID gReadClipboardForProgram = nullptr;
 
 constexpr int64_t kMaxImagePixels = 100 * 1000 * 1000;
 
@@ -177,7 +179,8 @@ struct Session {
   int32_t progressState = 0;
   int32_t progressPercent = -1;
   bool colorSchemeDark = true;
-  int32_t clipboardReadLocation = -1;
+  JNIEnv* env = nullptr;
+  jobject owner = nullptr;
   bool syncOutputActive = false;
   std::chrono::steady_clock::time_point syncOutputSince{};
   int32_t backgroundColor = 0;
@@ -243,10 +246,67 @@ void progressReportCallback(GhosttyTerminal, void* userdata,
   session->pendingEvents |= kEventProgress;
 }
 
-void clipboardReadCallback(GhosttyTerminal, void* userdata, GhosttyClipboardLocation location) {
+void clipboardReadCallback(GhosttyTerminal, void* userdata, const GhosttyClipboardRead* read) {
   auto* session = static_cast<Session*>(userdata);
-  session->clipboardReadLocation = static_cast<int32_t>(location);
-  session->pendingEvents |= kEventClipboardRead;
+  GhosttyClipboardReadReply reply{};
+  reply.size = sizeof(reply);
+  reply.result = GHOSTTY_CLIPBOARD_READ_RESULT_DENIED;
+  JNIEnv* env = session->env;
+  if (env == nullptr || session->owner == nullptr) {
+    read->reply(read, &reply);
+    return;
+  }
+
+  const GhosttyString* textMime = nullptr;
+  for (size_t i = 0; i < read->mimes_len; i++) {
+    const GhosttyString& mime = read->mimes[i];
+    if (mime.len >= 5 && memcmp(mime.ptr, "text/", 5) == 0) {
+      textMime = &mime;
+      break;
+    }
+  }
+
+  GhosttyString available{};
+  available.ptr = reinterpret_cast<const uint8_t*>("text/plain");
+  available.len = 10;
+  if (read->list && env->CallBooleanMethod(session->owner, gClipboardHasText) == JNI_TRUE) {
+    reply.available = &available;
+    reply.available_len = 1;
+  }
+  if (env->ExceptionCheck()) {
+    env->ExceptionClear();
+    reply.available = nullptr;
+    reply.available_len = 0;
+  }
+
+  std::string text;
+  GhosttyClipboardContent content{};
+  if (textMime == nullptr) {
+    reply.result = GHOSTTY_CLIPBOARD_READ_RESULT_SUCCESS;
+  } else {
+    auto data = static_cast<jbyteArray>(env->CallObjectMethod(
+        session->owner, gReadClipboardForProgram, read->granted ? JNI_TRUE : JNI_FALSE));
+    if (env->ExceptionCheck()) {
+      env->ExceptionClear();
+      data = nullptr;
+    }
+    if (data != nullptr) {
+      const jsize len = env->GetArrayLength(data);
+      text.resize(static_cast<size_t>(len));
+      if (len > 0) env->GetByteArrayRegion(data, 0, len, reinterpret_cast<jbyte*>(&text[0]));
+      env->DeleteLocalRef(data);
+      reply.result = GHOSTTY_CLIPBOARD_READ_RESULT_SUCCESS;
+      reply.remember = true;
+      if (!text.empty()) {
+        content.mime = *textMime;
+        content.data.ptr = reinterpret_cast<const uint8_t*>(text.data());
+        content.data.len = text.size();
+        reply.contents = &content;
+        reply.contents_len = 1;
+      }
+    }
+  }
+  read->reply(read, &reply);
 }
 
 bool colorSchemeCallback(GhosttyTerminal, void* userdata, GhosttyColorScheme* out) {
@@ -263,27 +323,36 @@ GhosttyString xtversionCallback(GhosttyTerminal, void* userdata) {
   return version;
 }
 
-GhosttyClipboardWriteResult clipboardWriteCallback(GhosttyTerminal, void* userdata,
-                                                   const GhosttyClipboardWrite* write) {
+void clipboardWriteCallback(GhosttyTerminal, void* userdata, const GhosttyClipboardWrite* write) {
   auto* session = static_cast<Session*>(userdata);
-  if (write->location != GHOSTTY_CLIPBOARD_LOCATION_STANDARD) {
-    return GHOSTTY_CLIPBOARD_WRITE_RESULT_UNSUPPORTED;
-  }
-  if (write->contents_len == 0) {
-    session->clipboardText.clear();
-    session->pendingEvents |= kEventClipboard;
-    return GHOSTTY_CLIPBOARD_WRITE_RESULT_SUCCESS;
-  }
-  for (size_t i = 0; i < write->contents_len; i++) {
-    const GhosttyClipboardContent& content = write->contents[i];
-    if (content.mime.len >= 5 && memcmp(content.mime.ptr, "text/", 5) == 0) {
-      session->clipboardText.assign(reinterpret_cast<const char*>(content.data.ptr),
-                                    content.data.len);
+  GhosttyClipboardWriteReply reply{};
+  reply.size = sizeof(reply);
+  reply.result = GHOSTTY_CLIPBOARD_WRITE_RESULT_UNSUPPORTED;
+  if (write->location == GHOSTTY_CLIPBOARD_LOCATION_STANDARD) {
+    if (write->contents_len == 0) {
+      session->clipboardText.clear();
       session->pendingEvents |= kEventClipboard;
-      return GHOSTTY_CLIPBOARD_WRITE_RESULT_SUCCESS;
+      reply.result = GHOSTTY_CLIPBOARD_WRITE_RESULT_SUCCESS;
+    }
+    for (size_t i = 0; i < write->contents_len; i++) {
+      const GhosttyClipboardContent& content = write->contents[i];
+      if (content.mime.len >= 5 && memcmp(content.mime.ptr, "text/", 5) == 0) {
+        session->clipboardText.assign(reinterpret_cast<const char*>(content.data.ptr),
+                                      content.data.len);
+        session->pendingEvents |= kEventClipboard;
+        reply.result = GHOSTTY_CLIPBOARD_WRITE_RESULT_SUCCESS;
+        break;
+      }
     }
   }
-  return GHOSTTY_CLIPBOARD_WRITE_RESULT_UNSUPPORTED;
+  write->reply(write, &reply);
+}
+
+bool pasteTextRead(void* userdata, GhosttyString, GhosttyWriter writer) {
+  const auto* text = static_cast<const std::vector<char>*>(userdata);
+  if (text->empty()) return true;
+  return writer.write(writer.userdata, reinterpret_cast<const uint8_t*>(text->data()),
+                      text->size());
 }
 
 jbyteArray bytesToArray(JNIEnv* env, const char* data, size_t len) {
@@ -384,8 +453,9 @@ bool modeSet(Session* session, GhosttyMode mode) {
   return config.value;
 }
 
-void destroySession(Session* session) {
+void destroySession(JNIEnv* env, Session* session) {
   if (session == nullptr) return;
+  if (session->owner != nullptr) env->DeleteGlobalRef(session->owner);
   ghostty_kitty_graphics_virtual_placement_iterator_free(session->kittyVirtualIterator);
   ghostty_kitty_graphics_placement_iterator_free(session->kittyIterator);
   ghostty_mouse_event_free(session->mouseEvent);
@@ -499,8 +569,9 @@ extern "C" {
 JNIEXPORT jlong JNICALL
 Java_io_github_sagernet_libghostty_GhosttyVt_nativeCreate(
     JNIEnv* env, jobject, jint cols, jint rows, jlong maxScrollbackLines, jstring xtversion,
-    jstring terminfoName, jint cursorStyle, jboolean cursorBlink) {
+    jstring terminfoName, jint cursorStyle, jboolean cursorBlink, jobject owner) {
   auto* session = new Session();
+  if (owner != nullptr) session->owner = env->NewGlobalRef(owner);
 
   if (xtversion != nullptr) {
     const char* utf = env->GetStringUTFChars(xtversion, nullptr);
@@ -527,7 +598,7 @@ Java_io_github_sagernet_libghostty_GhosttyVt_nativeCreate(
       ghostty_kitty_graphics_virtual_placement_iterator_new(
           &kMallocAllocator, &session->kittyVirtualIterator) != GHOSTTY_SUCCESS) {
     __android_log_print(ANDROID_LOG_ERROR, kLogTag, "failed to create terminal session");
-    destroySession(session);
+    destroySession(env, session);
     return 0;
   }
 
@@ -598,8 +669,8 @@ Java_io_github_sagernet_libghostty_GhosttyVt_nativeCreate(
 }
 
 JNIEXPORT void JNICALL
-Java_io_github_sagernet_libghostty_GhosttyVt_nativeFree(JNIEnv*, jobject, jlong handle) {
-  destroySession(fromHandle(handle));
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeFree(JNIEnv* env, jobject, jlong handle) {
+  destroySession(env, fromHandle(handle));
 }
 
 JNIEXPORT jbyteArray JNICALL
@@ -613,9 +684,11 @@ Java_io_github_sagernet_libghostty_GhosttyVt_nativeWrite(
   session->ptyOut.clear();
   if (length > 0) {
     jbyte* bytes = env->GetByteArrayElements(data, nullptr);
+    session->env = env;
     ghostty_terminal_vt_write(session->term,
                               reinterpret_cast<const uint8_t*>(bytes) + offset,
                               static_cast<size_t>(length));
+    session->env = nullptr;
     env->ReleaseByteArrayElements(data, bytes, JNI_ABORT);
 
     // OSC 11 changes the background without any terminal callback; diff
@@ -1172,19 +1245,27 @@ Java_io_github_sagernet_libghostty_GhosttyVt_nativeEncodePaste(
     env->GetByteArrayRegion(data, 0, len, reinterpret_cast<jbyte*>(input.data()));
   }
 
-  const bool bracketed = modeSet(session, GHOSTTY_MODE_BRACKETED_PASTE);
+  GhosttyString mime{};
+  mime.ptr = reinterpret_cast<const uint8_t*>("text/plain");
+  mime.len = 10;
+  GhosttyPaste paste{};
+  paste.size = sizeof(paste);
+  paste.location = GHOSTTY_CLIPBOARD_LOCATION_STANDARD;
+  paste.source = GHOSTTY_PASTE_SOURCE_CLIPBOARD;
+  paste.mimes = &mime;
+  paste.mimes_len = 1;
+  paste.reader.read = &pasteTextRead;
+  paste.reader.userdata = &input;
+  paste.allow_unsafe = true;
 
-  std::vector<char> out(input.size() + 16);
-  size_t written = 0;
-  GhosttyResult result = ghostty_paste_encode(input.data(), input.size(), bracketed,
-                                              out.data(), out.size(), &written);
-  if (result == GHOSTTY_OUT_OF_SPACE) {
-    out.resize(written);
-    result = ghostty_paste_encode(input.data(), input.size(), bracketed, out.data(),
-                                  out.size(), &written);
+  session->ptyOut.clear();
+  bool written = false;
+  if (ghostty_terminal_paste(session->term, &paste, &written) != GHOSTTY_SUCCESS || !written ||
+      session->ptyOut.empty()) {
+    return nullptr;
   }
-  if (result != GHOSTTY_SUCCESS) return nullptr;
-  return bytesToArray(env, out.data(), written);
+  return bytesToArray(env, reinterpret_cast<const char*>(session->ptyOut.data()),
+                      session->ptyOut.size());
 }
 
 JNIEXPORT jbyteArray JNICALL
@@ -1521,15 +1602,6 @@ Java_io_github_sagernet_libghostty_GhosttyVt_nativeSetColorScheme(
   return bytesToArray(env, buf, written);
 }
 
-JNIEXPORT jint JNICALL
-Java_io_github_sagernet_libghostty_GhosttyVt_nativeTakeClipboardRead(
-    JNIEnv*, jobject, jlong handle) {
-  auto* session = fromHandle(handle);
-  const jint location = session->clipboardReadLocation;
-  session->clipboardReadLocation = -1;
-  return location;
-}
-
 JNIEXPORT jbyteArray JNICALL
 Java_io_github_sagernet_libghostty_GhosttyVt_nativeHyperlinkAt(
     JNIEnv* env, jobject, jlong handle, jint col, jint row) {
@@ -1581,6 +1653,13 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {
       gBitmapGetPixels == nullptr || gBitmapRecycle == nullptr) {
     return JNI_ERR;
   }
+  jclass sessionClass = env->FindClass("io/github/sagernet/libghostty/GhosttyTerminalSession");
+  if (sessionClass == nullptr) return JNI_ERR;
+  gSessionClass = static_cast<jclass>(env->NewGlobalRef(sessionClass));
+  gClipboardHasText = env->GetMethodID(gSessionClass, "clipboardHasText", "()Z");
+  gReadClipboardForProgram =
+      env->GetMethodID(gSessionClass, "readClipboardForProgram", "(Z)[B");
+  if (gClipboardHasText == nullptr || gReadClipboardForProgram == nullptr) return JNI_ERR;
   ghostty_sys_set(GHOSTTY_SYS_OPT_DECODE_PNG,
                   reinterpret_cast<const void*>(&decodePngCallback));
   return JNI_VERSION_1_6;

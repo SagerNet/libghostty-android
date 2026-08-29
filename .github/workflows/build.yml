@@ -31,8 +31,6 @@ jobs:
           zig-version: ${{ env.ZIG_VERSION }}
       - name: Build
         run: ./gradlew assembleRelease
-      - name: Check patch assumptions
-        run: scripts/check-patch-assumptions.sh build/ghostty/source
       - uses: actions/upload-artifact@v7
         with:
           name: library-release

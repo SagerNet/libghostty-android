@@ -13,12 +13,7 @@ internal object GhosttyVt {
     const val EVENT_PWD = 1 shl 3
     const val EVENT_NOTIFICATION = 1 shl 4
     const val EVENT_PROGRESS = 1 shl 5
-    const val EVENT_CLIPBOARD_READ = 1 shl 6
-    const val EVENT_COLORS = 1 shl 7
-
-    const val CLIPBOARD_LOCATION_STANDARD = 0
-    const val CLIPBOARD_LOCATION_SELECTION = 1
-    const val CLIPBOARD_LOCATION_PRIMARY = 2
+    const val EVENT_COLORS = 1 shl 6
 
     const val PROGRESS_STATE_REMOVE = 0
     const val PROGRESS_STATE_SET = 1
@@ -34,6 +29,7 @@ internal object GhosttyVt {
         terminfoName: String?,
         cursorStyle: Int,
         cursorBlink: Boolean,
+        owner: GhosttyTerminalSession?,
     ): Long
 
     external fun nativeFree(handle: Long)
@@ -57,8 +53,6 @@ internal object GhosttyVt {
     external fun nativeSetColorScheme(handle: Long, dark: Boolean): ByteArray?
 
     external fun nativeEncodeFocus(handle: Long, gained: Boolean): ByteArray?
-
-    external fun nativeTakeClipboardRead(handle: Long): Int
 
     external fun nativeHyperlinkAt(handle: Long, col: Int, row: Int): ByteArray?
 

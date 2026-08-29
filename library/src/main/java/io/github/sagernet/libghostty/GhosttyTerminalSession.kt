@@ -6,10 +6,10 @@ import android.content.Context
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
-import android.util.Base64
 import android.util.Log
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -72,6 +72,7 @@ public class GhosttyTerminalSession(
         options.terminfoName,
         options.defaultCursorStyle.nativeValue,
         options.defaultCursorBlink,
+        this,
     )
         private set
 
@@ -131,7 +132,9 @@ public class GhosttyTerminalSession(
     public val hasAttachedView: Boolean
         get() = attachedView != null
 
+    @Volatile
     private var clipboardReadApproved = false
+    private val clipboardReadPromptPending = AtomicBoolean(false)
     private var attachedView: GhosttyTerminalView? = null
     private var cellWidthPixels = 0
     private var cellHeightPixels = 0
@@ -210,10 +213,6 @@ public class GhosttyTerminalSession(
                 )
             }
         }
-        if (flags and GhosttyVt.EVENT_CLIPBOARD_READ != 0) {
-            val location = GhosttyVt.nativeTakeClipboardRead(handle)
-            if (location >= 0) handleClipboardRead(location)
-        }
         if (flags and GhosttyVt.EVENT_PROGRESS != 0) {
             val progress = GhosttyVt.nativeGetProgress(handle)
             if (progress != null) {
@@ -242,41 +241,50 @@ public class GhosttyTerminalSession(
         if (report != null && report.isNotEmpty()) sendRawInput(report)
     }
 
-    private fun handleClipboardRead(location: Int) {
-        if (clipboardReadApproved) {
-            respondClipboardRead(location, readClipboardText())
-            return
-        }
-        val view = attachedView
-        if (view == null) {
-            respondClipboardRead(location, null)
-            return
-        }
-        view.uiHandler.requestClipboardRead(view.context) { approved ->
-            if (approved) {
-                clipboardReadApproved = true
-                respondClipboardRead(location, readClipboardText())
-            } else {
-                respondClipboardRead(location, null)
-            }
-        }
-    }
+    private val clipboardManager: ClipboardManager
+        get() = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
 
-    internal fun readClipboardText(): String? = (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
+    internal fun readClipboardText(): String? = clipboardManager
         .primaryClip
         ?.takeIf { it.itemCount > 0 }
         ?.getItemAt(0)
         ?.coerceToText(context)
         ?.toString()
 
-    private fun respondClipboardRead(location: Int, text: String?) {
-        val kind = when (location) {
-            GhosttyVt.CLIPBOARD_LOCATION_SELECTION -> 's'
-            GhosttyVt.CLIPBOARD_LOCATION_PRIMARY -> 'p'
-            else -> 'c'
+    // Called from native on the thread that calls [feedOutput].
+    @Suppress("unused")
+    private fun clipboardHasText(): Boolean = try {
+        clipboardManager.hasPrimaryClip()
+    } catch (e: Exception) {
+        Log.e(TAG, "clipboard query failed", e)
+        false
+    }
+
+    // Called from native on the thread that calls [feedOutput].
+    @Suppress("unused")
+    private fun readClipboardForProgram(granted: Boolean): ByteArray? {
+        if (!granted && !clipboardReadApproved) {
+            if (clipboardReadPromptPending.compareAndSet(false, true)) {
+                mainHandler.post {
+                    val view = attachedView
+                    if (view == null) {
+                        clipboardReadPromptPending.set(false)
+                        return@post
+                    }
+                    view.uiHandler.requestClipboardRead(view.context) { approved ->
+                        clipboardReadPromptPending.set(false)
+                        if (approved) clipboardReadApproved = true
+                    }
+                }
+            }
+            return null
         }
-        val encoded = Base64.encodeToString(text.orEmpty().toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
-        sendRawInput("\u001b]52;$kind;$encoded\u0007".toByteArray(Charsets.ISO_8859_1))
+        return try {
+            readClipboardText().orEmpty().toByteArray(Charsets.UTF_8)
+        } catch (e: Exception) {
+            Log.e(TAG, "clipboard read failed", e)
+            null
+        }
     }
 
     public fun sendFocus(gained: Boolean) {

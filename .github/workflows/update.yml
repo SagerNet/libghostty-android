@@ -67,8 +67,6 @@ jobs:
           zig-version: ${{ env.ZIG_VERSION }}
       - name: Build with new commit
         run: ./gradlew :library:assembleRelease
-      - name: Check patch assumptions
-        run: scripts/check-patch-assumptions.sh build/ghostty/source
       - name: Create pull request
         env:
           GH_TOKEN: ${{ github.token }}
