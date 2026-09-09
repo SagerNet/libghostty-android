@@ -74,6 +74,15 @@ public class GhosttyTerminalView @JvmOverloads constructor(
 
     public var showImeOnTap: Boolean = true
 
+    // Samsung keyboards keep their composing state across a TYPE_NULL field
+    // (termux/termux-app#686); a char-based text class makes them reset it.
+    public var enforceCharBasedInput: Boolean = false
+        set(value) {
+            if (field == value) return
+            field = value
+            (context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).restartInput(this)
+        }
+
     private var imeRequestedUntil = 0L
 
     /** Matches plain text as a URL, in addition to the hyperlinks the terminal reported. */
@@ -1710,11 +1719,16 @@ public class GhosttyTerminalView @JvmOverloads constructor(
     override fun onCheckIsTextEditor(): Boolean = true
 
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
-        // IMEs send each keystroke of a visible-password field as it is typed
-        // instead of batching autocorrect, and still compose CJK input.
-        outAttrs.inputType = InputType.TYPE_CLASS_TEXT or
-            InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD or
-            InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+        // Gboard treats a TYPE_NULL field as one it cannot read back: it sends
+        // Latin keystrokes and backspace as KeyEvents instead of replaying
+        // deleteSurroundingText + commitText against its own copy of the
+        // committed text, which drifts from the terminal after the first
+        // echo, autocorrect or auto-space.
+        outAttrs.inputType = if (enforceCharBasedInput) {
+            InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+        } else {
+            InputType.TYPE_NULL
+        }
         outAttrs.imeOptions = EditorInfo.IME_ACTION_NONE or
             EditorInfo.IME_FLAG_NO_FULLSCREEN or
             EditorInfo.IME_FLAG_NO_EXTRACT_UI
@@ -1860,21 +1874,23 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         invalidate()
     }
 
-    private inner class TerminalInputConnection : BaseInputConnection(this@GhosttyTerminalView, false) {
+    private inner class TerminalInputConnection : BaseInputConnection(this@GhosttyTerminalView, true) {
         override fun commitText(text: CharSequence, newCursorPosition: Int): Boolean {
-            updateComposingText(null)
-            sendText(text)
-            return super.commitText("", newCursorPosition)
+            super.commitText(text, newCursorPosition)
+            flushEditable()
+            return true
         }
 
         override fun setComposingText(text: CharSequence, newCursorPosition: Int): Boolean {
-            updateComposingText(text.toString())
-            return super.setComposingText(text, newCursorPosition)
+            super.setComposingText(text, newCursorPosition)
+            updateComposingText(editable?.toString())
+            return true
         }
 
         override fun finishComposingText(): Boolean {
-            updateComposingText(null)
-            return super.finishComposingText()
+            super.finishComposingText()
+            flushEditable()
+            return true
         }
 
         override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
@@ -1883,6 +1899,13 @@ public class GhosttyTerminalView @JvmOverloads constructor(
                 sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DEL))
             }
             return super.deleteSurroundingText(beforeLength, afterLength)
+        }
+
+        private fun flushEditable() {
+            updateComposingText(null)
+            val content = editable ?: return
+            if (content.isNotEmpty()) sendText(content.toString())
+            content.clear()
         }
 
         override fun performEditorAction(actionCode: Int): Boolean {
