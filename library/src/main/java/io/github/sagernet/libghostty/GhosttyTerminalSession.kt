@@ -23,10 +23,13 @@ import kotlinx.coroutines.flow.asStateFlow
  *
  * Lifecycle: [close] is idempotent; after it, every method is a no-op.
  */
-public class GhosttyTerminalSession(
+public class GhosttyTerminalSession private constructor(
     context: Context,
-    options: Options = Options(),
+    options: Options,
+    snapshot: ByteArray?,
 ) {
+
+    public constructor(context: Context, options: Options = Options()) : this(context, options, null)
 
     public class Options(
         public val columns: Int = 80,
@@ -64,16 +67,20 @@ public class GhosttyTerminalSession(
 
     internal val terminalAccess = Any()
 
-    internal var handle = GhosttyVt.nativeCreate(
-        options.columns,
-        options.rows,
-        options.maxScrollbackLines,
-        options.reportedVersion,
-        options.terminfoName,
-        options.defaultCursorStyle.nativeValue,
-        options.defaultCursorBlink,
-        this,
-    )
+    internal var handle = if (snapshot == null) {
+        GhosttyVt.nativeCreate(
+            options.columns,
+            options.rows,
+            options.maxScrollbackLines,
+            options.reportedVersion,
+            options.terminfoName,
+            options.defaultCursorStyle.nativeValue,
+            options.defaultCursorBlink,
+            this,
+        )
+    } else {
+        GhosttyVt.nativeSnapshotDecode(snapshot, options.reportedVersion, options.terminfoName, this)
+    }
         private set
 
     internal inline fun <T> withTerminal(block: (Long) -> T): T? = synchronized(terminalAccess) {
@@ -150,8 +157,7 @@ public class GhosttyTerminalSession(
     }
 
     init {
-        _backgroundColor.value = withTerminal { GhosttyVt.nativeGetBackgroundColor(it) }
-            ?.takeIf { it != 0 }
+        withTerminal { drainEvents(it) }
     }
 
     internal fun attach(view: GhosttyTerminalView) {
@@ -316,6 +322,12 @@ public class GhosttyTerminalSession(
     public fun transcriptText(): String? = withTerminal { GhosttyVt.nativeTranscriptText(it) }
         ?.toString(Charsets.UTF_8)
 
+    /**
+     * Returns null while the terminal is inside an unfinished escape sequence longer than 8 MiB.
+     * The snapshot format is not yet stable across library versions.
+     */
+    public fun saveSnapshot(): ByteArray? = withTerminal { GhosttyVt.nativeSnapshotEncode(it) }
+
     public fun resize(columns: Int, rows: Int, cellWidthPixels: Int, cellHeightPixels: Int) {
         resizeTerminal(columns, rows, cellWidthPixels, cellHeightPixels)
         scheduleTransportResize()
@@ -441,8 +453,19 @@ public class GhosttyTerminalSession(
         (data[i + 4] == '0'.code.toByte() || data[i + 4] == '1'.code.toByte()) &&
         data[i + 5] == '~'.code.toByte()
 
-    private companion object {
-        const val TAG = "GhosttyTerminalSession"
-        const val RESIZE_SEND_DEBOUNCE_MS = 100L
+    public companion object {
+        /**
+         * Returns null when [snapshot] is not a complete snapshot. Only [Options.reportedVersion] and
+         * [Options.terminfoName] apply; every other option is restored from the snapshot.
+         */
+        public fun restore(
+            context: Context,
+            snapshot: ByteArray,
+            options: Options = Options(),
+        ): GhosttyTerminalSession? =
+            GhosttyTerminalSession(context, options, snapshot).takeIf { it.terminalAlive }
+
+        private const val TAG = "GhosttyTerminalSession"
+        private const val RESIZE_SEND_DEBOUNCE_MS = 100L
     }
 }

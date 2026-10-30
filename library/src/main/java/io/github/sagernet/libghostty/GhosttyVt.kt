@@ -34,6 +34,15 @@ internal object GhosttyVt {
 
     external fun nativeFree(handle: Long)
 
+    external fun nativeSnapshotEncode(handle: Long): ByteArray?
+
+    external fun nativeSnapshotDecode(
+        data: ByteArray,
+        xtversion: String,
+        terminfoName: String?,
+        owner: GhosttyTerminalSession?,
+    ): Long
+
     external fun nativeWrite(handle: Long, data: ByteArray, offset: Int, length: Int): ByteArray?
 
     external fun nativeResize(handle: Long, cols: Int, rows: Int, cellWidthPx: Int, cellHeightPx: Int)
