@@ -54,6 +54,9 @@ constexpr uint32_t kKittyPlaceholder = 0x10EEEE;
 
 constexpr auto kSyncOutputTimeout = std::chrono::milliseconds(1000);
 
+constexpr uint64_t kKittyImageStorageBytes = 128 * 1024 * 1024;
+constexpr size_t kContinuationMaxBytes = 8 * 1024 * 1024;
+
 JavaVM* gJavaVm = nullptr;
 jclass gBitmapFactoryClass = nullptr;
 jmethodID gDecodeByteArray = nullptr;
@@ -444,6 +447,83 @@ void destroySession(JNIEnv* env, Session* session) {
   delete session;
 }
 
+Session* createSession(JNIEnv* env, GhosttyTerminal term, jstring xtversion,
+                       jstring terminfoName, jobject owner) {
+  auto* session = new Session();
+  session->term = term;
+  if (owner != nullptr) session->owner = env->NewGlobalRef(owner);
+
+  if (xtversion != nullptr) {
+    const char* utf = env->GetStringUTFChars(xtversion, nullptr);
+    if (utf != nullptr) {
+      session->xtversion.assign(utf);
+      env->ReleaseStringUTFChars(xtversion, utf);
+    }
+  }
+
+  if (ghostty_render_state_new(nullptr, &session->renderState) != GHOSTTY_SUCCESS ||
+      ghostty_render_state_row_iterator_new(nullptr, &session->rowIter) != GHOSTTY_SUCCESS ||
+      ghostty_render_state_row_cells_new(nullptr, &session->cells) != GHOSTTY_SUCCESS ||
+      ghostty_render_state_image_iterator_new(nullptr, &session->imageIter) != GHOSTTY_SUCCESS ||
+      ghostty_key_encoder_new(nullptr, &session->encoder) != GHOSTTY_SUCCESS ||
+      ghostty_key_event_new(nullptr, &session->keyEvent) != GHOSTTY_SUCCESS ||
+      ghostty_mouse_encoder_new(nullptr, &session->mouseEncoder) != GHOSTTY_SUCCESS ||
+      ghostty_mouse_event_new(nullptr, &session->mouseEvent) != GHOSTTY_SUCCESS) {
+    __android_log_print(ANDROID_LOG_ERROR, kLogTag, "failed to create terminal session");
+    destroySession(env, session);
+    return nullptr;
+  }
+
+  ghostty_terminal_get(term, GHOSTTY_TERMINAL_DATA_COLS, &session->cols);
+  ghostty_terminal_get(term, GHOSTTY_TERMINAL_DATA_ROWS, &session->rows);
+
+  const bool trackLastCell = true;
+  ghostty_mouse_encoder_setopt(session->mouseEncoder,
+                               GHOSTTY_MOUSE_ENCODER_OPT_TRACK_LAST_CELL, &trackLastCell);
+
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_USERDATA, session);
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_WRITE_PTY,
+                       reinterpret_cast<const void*>(&writePtyCallback));
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_BELL,
+                       reinterpret_cast<const void*>(&bellCallback));
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_TITLE_CHANGED,
+                       reinterpret_cast<const void*>(&titleChangedCallback));
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE,
+                       reinterpret_cast<const void*>(&clipboardWriteCallback));
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_DEVICE_ATTRIBUTES,
+                       reinterpret_cast<const void*>(&deviceAttributesCallback));
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_SIZE,
+                       reinterpret_cast<const void*>(&sizeCallback));
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_PWD_CHANGED,
+                       reinterpret_cast<const void*>(&pwdChangedCallback));
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_DESKTOP_NOTIFICATION,
+                       reinterpret_cast<const void*>(&desktopNotificationCallback));
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_PROGRESS_REPORT,
+                       reinterpret_cast<const void*>(&progressReportCallback));
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_COLOR_SCHEME,
+                       reinterpret_cast<const void*>(&colorSchemeCallback));
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_XTVERSION,
+                       reinterpret_cast<const void*>(&xtversionCallback));
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_CLIPBOARD_READ,
+                       reinterpret_cast<const void*>(&clipboardReadCallback));
+
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT,
+                       &kKittyImageStorageBytes);
+
+  if (terminfoName != nullptr) {
+    const char* utf = env->GetStringUTFChars(terminfoName, nullptr);
+    if (utf != nullptr) {
+      GhosttyString name{};
+      name.ptr = reinterpret_cast<const uint8_t*>(utf);
+      name.len = strlen(utf);
+      ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_TERMINFO_NAME, &name);
+      env->ReleaseStringUTFChars(terminfoName, utf);
+    }
+  }
+
+  return session;
+}
+
 GhosttyKey mapKey(int32_t keyCode) {
   if (keyCode >= AKEYCODE_A && keyCode <= AKEYCODE_Z) {
     return static_cast<GhosttyKey>(GHOSTTY_KEY_A + (keyCode - AKEYCODE_A));
@@ -545,82 +625,20 @@ JNIEXPORT jlong JNICALL
 Java_io_github_sagernet_libghostty_GhosttyVt_nativeCreate(
     JNIEnv* env, jobject, jint cols, jint rows, jlong maxScrollbackLines, jstring xtversion,
     jstring terminfoName, jint cursorStyle, jboolean cursorBlink, jobject owner) {
-  auto* session = new Session();
-  if (owner != nullptr) session->owner = env->NewGlobalRef(owner);
-
-  if (xtversion != nullptr) {
-    const char* utf = env->GetStringUTFChars(xtversion, nullptr);
-    if (utf != nullptr) {
-      session->xtversion.assign(utf);
-      env->ReleaseStringUTFChars(xtversion, utf);
-    }
-  }
-
-  if (ghostty_terminal_new(nullptr, &session->term, static_cast<uint16_t>(cols),
-                           static_cast<uint16_t>(rows)) != GHOSTTY_SUCCESS ||
-      ghostty_render_state_new(nullptr, &session->renderState) != GHOSTTY_SUCCESS ||
-      ghostty_render_state_row_iterator_new(nullptr, &session->rowIter) != GHOSTTY_SUCCESS ||
-      ghostty_render_state_row_cells_new(nullptr, &session->cells) != GHOSTTY_SUCCESS ||
-      ghostty_render_state_image_iterator_new(nullptr, &session->imageIter) != GHOSTTY_SUCCESS ||
-      ghostty_key_encoder_new(nullptr, &session->encoder) != GHOSTTY_SUCCESS ||
-      ghostty_key_event_new(nullptr, &session->keyEvent) != GHOSTTY_SUCCESS ||
-      ghostty_mouse_encoder_new(nullptr, &session->mouseEncoder) != GHOSTTY_SUCCESS ||
-      ghostty_mouse_event_new(nullptr, &session->mouseEvent) != GHOSTTY_SUCCESS) {
-    __android_log_print(ANDROID_LOG_ERROR, kLogTag, "failed to create terminal session");
-    destroySession(env, session);
+  GhosttyTerminal term = nullptr;
+  if (ghostty_terminal_new(nullptr, &term, static_cast<uint16_t>(cols),
+                           static_cast<uint16_t>(rows)) != GHOSTTY_SUCCESS) {
+    __android_log_print(ANDROID_LOG_ERROR, kLogTag, "failed to create terminal");
     return 0;
   }
+  auto* session = createSession(env, term, xtversion, terminfoName, owner);
+  if (session == nullptr) return 0;
 
-  session->cols = static_cast<uint16_t>(cols);
-  session->rows = static_cast<uint16_t>(rows);
-
-  const bool trackLastCell = true;
-  ghostty_mouse_encoder_setopt(session->mouseEncoder,
-                               GHOSTTY_MOUSE_ENCODER_OPT_TRACK_LAST_CELL, &trackLastCell);
-
-  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_USERDATA, session);
-  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_WRITE_PTY,
-                       reinterpret_cast<const void*>(&writePtyCallback));
-  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_BELL,
-                       reinterpret_cast<const void*>(&bellCallback));
-  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_TITLE_CHANGED,
-                       reinterpret_cast<const void*>(&titleChangedCallback));
-  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE,
-                       reinterpret_cast<const void*>(&clipboardWriteCallback));
-  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_DEVICE_ATTRIBUTES,
-                       reinterpret_cast<const void*>(&deviceAttributesCallback));
-  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_SIZE,
-                       reinterpret_cast<const void*>(&sizeCallback));
-  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_PWD_CHANGED,
-                       reinterpret_cast<const void*>(&pwdChangedCallback));
-  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_DESKTOP_NOTIFICATION,
-                       reinterpret_cast<const void*>(&desktopNotificationCallback));
-  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_PROGRESS_REPORT,
-                       reinterpret_cast<const void*>(&progressReportCallback));
-  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_COLOR_SCHEME,
-                       reinterpret_cast<const void*>(&colorSchemeCallback));
-  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_XTVERSION,
-                       reinterpret_cast<const void*>(&xtversionCallback));
-  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_CLIPBOARD_READ,
-                       reinterpret_cast<const void*>(&clipboardReadCallback));
-
-  const uint64_t kittyStorageLimit = 128 * 1024 * 1024;
-  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT,
-                       &kittyStorageLimit);
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_CONTINUATION_MAX_BYTES,
+                       &kContinuationMaxBytes);
 
   const size_t scrollbackLines = static_cast<size_t>(maxScrollbackLines);
   ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES, &scrollbackLines);
-
-  if (terminfoName != nullptr) {
-    const char* utf = env->GetStringUTFChars(terminfoName, nullptr);
-    if (utf != nullptr) {
-      GhosttyString name{};
-      name.ptr = reinterpret_cast<const uint8_t*>(utf);
-      name.len = strlen(utf);
-      ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_TERMINFO_NAME, &name);
-      env->ReleaseStringUTFChars(terminfoName, utf);
-    }
-  }
 
   GhosttyColorRgb bg{0x00, 0x00, 0x00};
   GhosttyColorRgb fg{0xFF, 0xFF, 0xFF};
@@ -632,6 +650,7 @@ Java_io_github_sagernet_libghostty_GhosttyVt_nativeCreate(
   const bool blinkDefault = cursorBlink != JNI_FALSE;
   ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_BLINK, &blinkDefault);
 
+  session->pendingEvents = kEventColors;
   session->backgroundColor = effectiveBackgroundColor(session);
 
   return static_cast<jlong>(reinterpret_cast<intptr_t>(session));
@@ -640,6 +659,59 @@ Java_io_github_sagernet_libghostty_GhosttyVt_nativeCreate(
 JNIEXPORT void JNICALL
 Java_io_github_sagernet_libghostty_GhosttyVt_nativeFree(JNIEnv* env, jobject, jlong handle) {
   destroySession(env, fromHandle(handle));
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeSnapshotEncode(
+    JNIEnv* env, jobject, jlong handle) {
+  auto* session = fromHandle(handle);
+  uint8_t* data = nullptr;
+  size_t len = 0;
+  const GhosttyResult result = ghostty_snapshot_encode_alloc(session->term, nullptr, &data, &len);
+  if (result != GHOSTTY_SUCCESS) {
+    __android_log_print(ANDROID_LOG_WARN, kLogTag, "failed to encode snapshot: %d", result);
+    return nullptr;
+  }
+  jbyteArray out = bytesToArray(env, reinterpret_cast<const char*>(data), len);
+  ghostty_free(nullptr, data, len);
+  return out;
+}
+
+JNIEXPORT jlong JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeSnapshotDecode(
+    JNIEnv* env, jobject, jbyteArray data, jstring xtversion, jstring terminfoName,
+    jobject owner) {
+  std::vector<uint8_t> bytes(static_cast<size_t>(env->GetArrayLength(data)));
+  env->GetByteArrayRegion(data, 0, static_cast<jsize>(bytes.size()),
+                          reinterpret_cast<jbyte*>(bytes.data()));
+
+  GhosttySnapshotDecoder decoder = nullptr;
+  GhosttyResult result =
+      ghostty_snapshot_decoder_new_buf(nullptr, &decoder, bytes.data(), bytes.size());
+  GhosttyTerminal term = nullptr;
+  if (result == GHOSTTY_SUCCESS) {
+    const bool enabled = true;
+    ghostty_snapshot_decoder_set(decoder, GHOSTTY_SNAPSHOT_DECODER_OPT_MAX_CONTINUATION_BYTES,
+                                 &kContinuationMaxBytes);
+    ghostty_snapshot_decoder_set(decoder, GHOSTTY_SNAPSHOT_DECODER_OPT_RETAIN_CONTINUATION,
+                                 &enabled);
+    ghostty_snapshot_decoder_set(decoder, GHOSTTY_SNAPSHOT_DECODER_OPT_COMPRESS_HISTORY,
+                                 &enabled);
+    ghostty_snapshot_decoder_set(decoder, GHOSTTY_SNAPSHOT_DECODER_OPT_KITTY_IMAGE_STORAGE_LIMIT,
+                                 &kKittyImageStorageBytes);
+    result = ghostty_snapshot_decoder_decode(decoder, &term);
+  }
+  ghostty_snapshot_decoder_free(decoder);
+  if (result != GHOSTTY_SUCCESS) {
+    __android_log_print(ANDROID_LOG_WARN, kLogTag, "failed to decode snapshot: %d", result);
+    return 0;
+  }
+
+  auto* session = createSession(env, term, xtversion, terminfoName, owner);
+  if (session == nullptr) return 0;
+  session->pendingEvents = kEventTitle | kEventPwd | kEventColors;
+  session->backgroundColor = effectiveBackgroundColor(session);
+  return static_cast<jlong>(reinterpret_cast<intptr_t>(session));
 }
 
 JNIEXPORT jbyteArray JNICALL
