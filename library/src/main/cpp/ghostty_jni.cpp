@@ -10,7 +10,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <iterator>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -51,31 +53,6 @@ constexpr jint kEventColors = 1 << 6;
 constexpr uint32_t kKittyPlaceholder = 0x10EEEE;
 
 constexpr auto kSyncOutputTimeout = std::chrono::milliseconds(1000);
-
-// Without libc, libghostty's default allocator on Android is Zig's page
-// allocator (patches/ghostty/0002): every allocation rounds up to a page.
-void* mallocAlloc(void*, size_t len, uint8_t alignment, uintptr_t) {
-  void* ptr = nullptr;
-  const size_t align = alignment < sizeof(void*) ? sizeof(void*) : alignment;
-  if (posix_memalign(&ptr, align, len) != 0) return nullptr;
-  return ptr;
-}
-
-bool mallocResize(void*, void*, size_t memoryLen, uint8_t, size_t newLen, uintptr_t) {
-  return newLen <= memoryLen;
-}
-
-void* mallocRemap(void*, void*, size_t, uint8_t, size_t, uintptr_t) {
-  return nullptr;
-}
-
-void mallocFree(void*, void* memory, size_t, uint8_t, uintptr_t) {
-  free(memory);
-}
-
-constexpr GhosttyAllocatorVtable kMallocVtable = {
-    &mallocAlloc, &mallocResize, &mallocRemap, &mallocFree};
-constexpr GhosttyAllocator kMallocAllocator = {nullptr, &kMallocVtable};
 
 JavaVM* gJavaVm = nullptr;
 jclass gBitmapFactoryClass = nullptr;
@@ -164,8 +141,7 @@ struct Session {
   GhosttyKeyEvent keyEvent = nullptr;
   GhosttyMouseEncoder mouseEncoder = nullptr;
   GhosttyMouseEvent mouseEvent = nullptr;
-  GhosttyKittyGraphicsPlacementIterator kittyIterator = nullptr;
-  GhosttyKittyGraphicsVirtualPlacementIterator kittyVirtualIterator = nullptr;
+  GhosttyRenderStateImageIterator imageIter = nullptr;
   uint16_t cols = 0;
   uint16_t rows = 0;
   uint32_t cellWidthPx = 0;
@@ -456,8 +432,7 @@ bool modeSet(Session* session, GhosttyMode mode) {
 void destroySession(JNIEnv* env, Session* session) {
   if (session == nullptr) return;
   if (session->owner != nullptr) env->DeleteGlobalRef(session->owner);
-  ghostty_kitty_graphics_virtual_placement_iterator_free(session->kittyVirtualIterator);
-  ghostty_kitty_graphics_placement_iterator_free(session->kittyIterator);
+  ghostty_render_state_image_iterator_free(session->imageIter);
   ghostty_mouse_event_free(session->mouseEvent);
   ghostty_mouse_encoder_free(session->mouseEncoder);
   ghostty_key_event_free(session->keyEvent);
@@ -581,22 +556,16 @@ Java_io_github_sagernet_libghostty_GhosttyVt_nativeCreate(
     }
   }
 
-  if (ghostty_terminal_new(&kMallocAllocator, &session->term, static_cast<uint16_t>(cols),
+  if (ghostty_terminal_new(nullptr, &session->term, static_cast<uint16_t>(cols),
                            static_cast<uint16_t>(rows)) != GHOSTTY_SUCCESS ||
-      ghostty_render_state_new(&kMallocAllocator, &session->renderState) != GHOSTTY_SUCCESS ||
-      ghostty_render_state_row_iterator_new(&kMallocAllocator, &session->rowIter) !=
-          GHOSTTY_SUCCESS ||
-      ghostty_render_state_row_cells_new(&kMallocAllocator, &session->cells) !=
-          GHOSTTY_SUCCESS ||
-      ghostty_key_encoder_new(&kMallocAllocator, &session->encoder) != GHOSTTY_SUCCESS ||
-      ghostty_key_event_new(&kMallocAllocator, &session->keyEvent) != GHOSTTY_SUCCESS ||
-      ghostty_mouse_encoder_new(&kMallocAllocator, &session->mouseEncoder) !=
-          GHOSTTY_SUCCESS ||
-      ghostty_mouse_event_new(&kMallocAllocator, &session->mouseEvent) != GHOSTTY_SUCCESS ||
-      ghostty_kitty_graphics_placement_iterator_new(&kMallocAllocator, &session->kittyIterator) !=
-          GHOSTTY_SUCCESS ||
-      ghostty_kitty_graphics_virtual_placement_iterator_new(
-          &kMallocAllocator, &session->kittyVirtualIterator) != GHOSTTY_SUCCESS) {
+      ghostty_render_state_new(nullptr, &session->renderState) != GHOSTTY_SUCCESS ||
+      ghostty_render_state_row_iterator_new(nullptr, &session->rowIter) != GHOSTTY_SUCCESS ||
+      ghostty_render_state_row_cells_new(nullptr, &session->cells) != GHOSTTY_SUCCESS ||
+      ghostty_render_state_image_iterator_new(nullptr, &session->imageIter) != GHOSTTY_SUCCESS ||
+      ghostty_key_encoder_new(nullptr, &session->encoder) != GHOSTTY_SUCCESS ||
+      ghostty_key_event_new(nullptr, &session->keyEvent) != GHOSTTY_SUCCESS ||
+      ghostty_mouse_encoder_new(nullptr, &session->mouseEncoder) != GHOSTTY_SUCCESS ||
+      ghostty_mouse_event_new(nullptr, &session->mouseEvent) != GHOSTTY_SUCCESS) {
     __android_log_print(ANDROID_LOG_ERROR, kLogTag, "failed to create terminal session");
     destroySession(env, session);
     return 0;
@@ -1200,18 +1169,17 @@ Java_io_github_sagernet_libghostty_GhosttyVt_nativeTranscriptText(
   options.trim = true;
   options.selection = nullptr;
   GhosttyFormatter formatter = nullptr;
-  if (ghostty_formatter_terminal_new(&kMallocAllocator, &formatter, session->term, options) !=
+  if (ghostty_formatter_terminal_new(nullptr, &formatter, session->term, options) !=
       GHOSTTY_SUCCESS) {
     return nullptr;
   }
   uint8_t* data = nullptr;
   size_t len = 0;
   jbyteArray out = nullptr;
-  if (ghostty_formatter_format_alloc(formatter, &kMallocAllocator, &data, &len) ==
-          GHOSTTY_SUCCESS &&
+  if (ghostty_formatter_format_alloc(formatter, nullptr, &data, &len) == GHOSTTY_SUCCESS &&
       data != nullptr) {
     out = bytesToArray(env, reinterpret_cast<const char*>(data), len);
-    ghostty_free(&kMallocAllocator, data, len);
+    ghostty_free(nullptr, data, len);
   }
   ghostty_formatter_free(formatter);
   return out;
@@ -1368,94 +1336,68 @@ JNIEXPORT jlongArray JNICALL
 Java_io_github_sagernet_libghostty_GhosttyVt_nativeKittyPlacements(
     JNIEnv* env, jobject, jlong handle) {
   auto* session = fromHandle(handle);
-  GhosttyKittyGraphics graphics = nullptr;
-  if (ghostty_terminal_get(session->term, GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS, &graphics) !=
-      GHOSTTY_SUCCESS) {
-    return nullptr;
-  }
-  uint64_t generation = 0;
-  if (ghostty_kitty_graphics_get(graphics, GHOSTTY_KITTY_GRAPHICS_DATA_GENERATION,
-                                 &generation) != GHOSTTY_SUCCESS ||
-      generation == 0) {
-    return nullptr;
-  }
-  if (ghostty_kitty_graphics_get(graphics, GHOSTTY_KITTY_GRAPHICS_DATA_PLACEMENT_ITERATOR,
-                                 &session->kittyIterator) != GHOSTTY_SUCCESS) {
+  if (ghostty_render_state_get(session->renderState, GHOSTTY_RENDER_STATE_DATA_IMAGE_ITERATOR,
+                               &session->imageIter) != GHOSTTY_SUCCESS) {
     return nullptr;
   }
 
   constexpr size_t kPlacementLongs = 13;
-  std::vector<std::array<int64_t, kPlacementLongs>> records;
-  while (ghostty_kitty_graphics_placement_next(session->kittyIterator)) {
-    bool isVirtual = false;
-    ghostty_kitty_graphics_placement_get(session->kittyIterator,
-                                         GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IS_VIRTUAL,
-                                         &isVirtual);
-    if (isVirtual) continue;
+  std::vector<std::pair<int32_t, std::array<int64_t, kPlacementLongs>>> records;
+  while (ghostty_render_state_image_iterator_next(session->imageIter)) {
+    GhosttyImageProtocol protocol = GHOSTTY_IMAGE_PROTOCOL_KITTY;
     uint32_t imageId = 0;
-    if (ghostty_kitty_graphics_placement_get(session->kittyIterator,
-                                             GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IMAGE_ID,
-                                             &imageId) != GHOSTTY_SUCCESS) {
-      continue;
-    }
-    GhosttyKittyGraphicsImage image = ghostty_kitty_graphics_image(graphics, imageId);
-    if (image == nullptr) continue;
-    auto info = GHOSTTY_INIT_SIZED(GhosttyKittyGraphicsPlacementRenderInfo);
-    if (ghostty_kitty_graphics_placement_render_info(session->kittyIterator, image,
-                                                     session->term, &info) != GHOSTTY_SUCCESS ||
-        !info.viewport_visible || info.pixel_width == 0 || info.pixel_height == 0 ||
-        info.source_width == 0 || info.source_height == 0) {
-      continue;
-    }
     uint64_t imageGeneration = 0;
-    ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_IMAGE_DATA_GENERATION,
-                                     &imageGeneration);
-    uint32_t xOffset = 0;
-    uint32_t yOffset = 0;
+    GhosttyRenderStateImageLayer layer = GHOSTTY_RENDER_STATE_IMAGE_LAYER_ABOVE_TEXT;
     int32_t z = 0;
-    ghostty_kitty_graphics_placement_get(session->kittyIterator,
-                                         GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_X_OFFSET,
-                                         &xOffset);
-    ghostty_kitty_graphics_placement_get(session->kittyIterator,
-                                         GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_Y_OFFSET,
-                                         &yOffset);
-    ghostty_kitty_graphics_placement_get(session->kittyIterator,
-                                         GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_Z, &z);
-    const std::array<int64_t, kPlacementLongs> record = {
-        imageId, static_cast<int64_t>(imageGeneration), info.viewport_col, info.viewport_row,
-        xOffset, yOffset, info.pixel_width, info.pixel_height, info.source_x, info.source_y,
-        info.source_width, info.source_height, z};
-    records.push_back(record);
-  }
-
-  if (ghostty_kitty_graphics_virtual_placement_iterator_begin(
-          session->term, session->kittyVirtualIterator) == GHOSTTY_SUCCESS) {
-    while (ghostty_kitty_graphics_virtual_placement_iterator_next(session->kittyVirtualIterator)) {
-      auto virtualInfo = GHOSTTY_INIT_SIZED(GhosttyKittyGraphicsVirtualRenderInfo);
-      if (ghostty_kitty_graphics_virtual_placement_render_info(
-              session->kittyVirtualIterator, session->term, &virtualInfo) != GHOSTTY_SUCCESS) {
-        continue;
-      }
-      GhosttyKittyGraphicsImage image =
-          ghostty_kitty_graphics_image(graphics, virtualInfo.image_id);
-      if (image == nullptr) continue;
-      uint64_t imageGeneration = 0;
-      ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_IMAGE_DATA_GENERATION,
-                                       &imageGeneration);
-      const std::array<int64_t, kPlacementLongs> record = {
-          virtualInfo.image_id, static_cast<int64_t>(imageGeneration),
-          virtualInfo.viewport_col, virtualInfo.viewport_row, virtualInfo.offset_x,
-          virtualInfo.offset_y, virtualInfo.dest_width, virtualInfo.dest_height,
-          virtualInfo.source_x, virtualInfo.source_y, virtualInfo.source_width,
-          virtualInfo.source_height, 0};
-      records.push_back(record);
+    int32_t col = 0;
+    int32_t row = 0;
+    uint32_t offsetX = 0;
+    uint32_t offsetY = 0;
+    uint32_t pixelWidth = 0;
+    uint32_t pixelHeight = 0;
+    uint32_t sourceX = 0;
+    uint32_t sourceY = 0;
+    uint32_t sourceWidth = 0;
+    uint32_t sourceHeight = 0;
+    const GhosttyRenderStateImageData keys[] = {
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_PROTOCOL,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_IMAGE_ID,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_IMAGE_GENERATION,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_LAYER,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_Z,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_VIEWPORT_COL,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_VIEWPORT_ROW,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_CELL_OFFSET_X,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_CELL_OFFSET_Y,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_PIXEL_WIDTH,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_PIXEL_HEIGHT,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_X,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_Y,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_WIDTH,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_HEIGHT,
+    };
+    void* values[] = {
+        &protocol, &imageId, &imageGeneration, &layer, &z, &col, &row, &offsetX, &offsetY,
+        &pixelWidth, &pixelHeight, &sourceX, &sourceY, &sourceWidth, &sourceHeight,
+    };
+    static_assert(std::size(keys) == std::size(values), "image query keys and values drifted");
+    if (ghostty_render_state_image_get_multi(session->imageIter, std::size(keys), keys, values,
+                                             nullptr) != GHOSTTY_SUCCESS ||
+        protocol != GHOSTTY_IMAGE_PROTOCOL_KITTY || pixelWidth == 0 || pixelHeight == 0 ||
+        sourceWidth == 0 || sourceHeight == 0) {
+      continue;
     }
+    records.push_back({z,
+                       {imageId, static_cast<int64_t>(imageGeneration), col, row, offsetX,
+                        offsetY, pixelWidth, pixelHeight, sourceX, sourceY, sourceWidth,
+                        sourceHeight, static_cast<int64_t>(layer)}});
   }
 
   if (records.empty()) return nullptr;
 
-  std::stable_sort(records.begin(), records.end(),
-                   [](const auto& a, const auto& b) { return a[12] < b[12]; });
+  std::stable_sort(records.begin(), records.end(), [](const auto& a, const auto& b) {
+    return std::tie(a.second[12], a.first) < std::tie(b.second[12], b.first);
+  });
 
   const auto outLen = static_cast<jsize>(records.size() * kPlacementLongs);
   jlongArray out = env->NewLongArray(outLen);
@@ -1463,7 +1405,7 @@ Java_io_github_sagernet_libghostty_GhosttyVt_nativeKittyPlacements(
   for (size_t i = 0; i < records.size(); i++) {
     static_assert(sizeof(jlong) == sizeof(int64_t), "jlong is not 64-bit");
     env->SetLongArrayRegion(out, static_cast<jsize>(i * kPlacementLongs), kPlacementLongs,
-                            reinterpret_cast<const jlong*>(records[i].data()));
+                            reinterpret_cast<const jlong*>(records[i].second.data()));
   }
   return out;
 }
@@ -1607,16 +1549,18 @@ Java_io_github_sagernet_libghostty_GhosttyVt_nativeHyperlinkAt(
     JNIEnv* env, jobject, jlong handle, jint col, jint row) {
   auto* session = fromHandle(handle);
   if (col < 0 || row < 0) return nullptr;
-  if (ghostty_render_state_update(session->renderState, session->term) != GHOSTTY_SUCCESS) {
+  GhosttyGridRef ref{};
+  ref.size = sizeof(ref);
+  if (!viewportGridRef(session, col, row, &ref)) return nullptr;
+  size_t len = 0;
+  if (ghostty_grid_ref_hyperlink_uri(&ref, nullptr, 0, &len) != GHOSTTY_OUT_OF_SPACE) {
     return nullptr;
   }
-  GhosttyString uri{};
-  if (ghostty_render_state_link_uri_at(session->renderState, static_cast<uint16_t>(col),
-                                       static_cast<uint32_t>(row), &uri) != GHOSTTY_SUCCESS ||
-      uri.len == 0) {
+  std::vector<uint8_t> uri(len);
+  if (ghostty_grid_ref_hyperlink_uri(&ref, uri.data(), uri.size(), &len) != GHOSTTY_SUCCESS) {
     return nullptr;
   }
-  return bytesToArray(env, reinterpret_cast<const char*>(uri.ptr), uri.len);
+  return bytesToArray(env, reinterpret_cast<const char*>(uri.data()), len);
 }
 
 JNIEXPORT jbyteArray JNICALL

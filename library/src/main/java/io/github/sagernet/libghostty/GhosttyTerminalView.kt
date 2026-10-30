@@ -946,7 +946,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
                         imageBitmap,
                         Rect(sourceX, sourceY, sourceX + data[i + 10].toInt(), sourceY + data[i + 11].toInt()),
                         RectF(left, top, left + data[i + 6], top + data[i + 7]),
-                        data[i + 12] < 0,
+                        data[i + 12] != GhosttyVt.KITTY_LAYER_ABOVE_TEXT,
                     ),
                 )
             }

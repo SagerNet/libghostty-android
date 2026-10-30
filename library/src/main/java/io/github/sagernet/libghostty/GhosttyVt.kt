@@ -81,6 +81,8 @@ internal object GhosttyVt {
 
     const val KITTY_PLACEMENT_LONGS = 13
 
+    const val KITTY_LAYER_ABOVE_TEXT = 2L
+
     external fun nativeKittyPlacements(handle: Long): LongArray?
 
     external fun nativeKittyImage(handle: Long, imageId: Int): IntArray?

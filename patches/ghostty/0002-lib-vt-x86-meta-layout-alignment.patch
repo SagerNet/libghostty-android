@@ -1,0 +1,13 @@
+diff --git a/src/terminal/page.zig b/src/terminal/page.zig
+index 48d405b5f..18f24e13d 100644
+--- a/src/terminal/page.zig
++++ b/src/terminal/page.zig
+@@ -1812,7 +1812,7 @@ pub const Page = struct {
+         /// The alignment of the block's start: the largest alignment any
+         /// member requires, so that the member offsets above don't depend
+         /// on where the block is placed.
+-        pub const alignment = @max(
++        pub const alignment: usize = @max(
+             StyleSet.base_align.toByteUnits(),
+             GraphemeAlloc.base_align.toByteUnits(),
+             GraphemeMap.base_align.toByteUnits(),
