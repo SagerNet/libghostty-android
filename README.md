@@ -5,11 +5,11 @@ with a terminal view, session management, theme catalog, and font handling.
 
 ```kotlin
 dependencies {
-    implementation("io.github.sagernet:libghostty-android:0.1.0-alpha01")
+    implementation("io.github.sagernet:libghostty-android:0.1.0-alpha02")
 
     // optional
-    implementation("io.github.sagernet:libghostty-android-extras:0.1.0-alpha01")
-    implementation("io.github.sagernet:libghostty-android-compose:0.1.0-alpha01")
+    implementation("io.github.sagernet:libghostty-android-extras:0.1.0-alpha02")
+    implementation("io.github.sagernet:libghostty-android-compose:0.1.0-alpha02")
 }
 ```
 
