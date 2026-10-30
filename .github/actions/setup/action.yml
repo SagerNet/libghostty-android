@@ -36,6 +36,7 @@ runs:
     - uses: mlugg/setup-zig@v2
       with:
         version: ${{ inputs.zig-version }}
+        use-cache: false
     - name: Read the pinned ghostty commit
       id: ghostty
       shell: bash
