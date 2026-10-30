@@ -33,6 +33,12 @@ abstract class GhosttySourceTask @Inject constructor(
     @get:Internal
     abstract val sourceDir: DirectoryProperty
 
+    @get:Input
+    abstract val fetchTargets: ListProperty<String>
+
+    @get:Internal
+    abstract val cacheDir: DirectoryProperty
+
     init {
         outputs.upToDateWhen { (it as GhosttySourceTask).isCurrent() }
     }
@@ -76,6 +82,18 @@ abstract class GhosttySourceTask @Inject constructor(
         for (patch in patches.files.sortedBy { it.name }) {
             git(source, "apply", patch.absolutePath)
         }
+        for (target in fetchTargets.get()) {
+            execOperations.exec {
+                workingDir = source
+                commandLine(
+                    listOf("zig", "build") + GHOSTTY_BUILD_OPTIONS + listOf(
+                        "-Dtarget=$target", "-l",
+                        "--cache-dir", cacheDir.get().asFile.absolutePath,
+                    )
+                )
+                standardOutput = ByteArrayOutputStream()
+            }
+        }
     }
 
     private fun fetch(source: File) {
@@ -104,6 +122,8 @@ abstract class GhosttySourceTask @Inject constructor(
 
 const val GHOSTTY_SUBMODULE = "ghostty"
 
+internal val GHOSTTY_BUILD_OPTIONS = listOf("-Demit-lib-vt", "-Dsimd=false")
+
 fun ghosttyCommit(project: Project): String {
     val entry = project.providers.exec {
         workingDir = project.rootDir
@@ -121,6 +141,7 @@ internal class GhosttyEnv(project: Project) {
         }
     val buildDir = project.rootProject.layout.buildDirectory.dir("ghostty")
     val sourceDir = buildDir.map { it.dir("source") }
+    val cacheDir = buildDir.map { it.dir("zig-cache") }
 
     val source = project.rootProject.tasks.let { tasks ->
         if (tasks.names.contains("ghosttySource")) {
@@ -136,6 +157,8 @@ internal class GhosttyEnv(project: Project) {
                 commit.set(this@GhosttyEnv.commit)
                 patches.from(this@GhosttyEnv.patches)
                 sourceDir.set(this@GhosttyEnv.sourceDir)
+                fetchTargets.set(ghosttyAbis.map { it.zigTarget })
+                cacheDir.set(this@GhosttyEnv.cacheDir)
             }
         }
     }

@@ -54,10 +54,11 @@ abstract class GhosttyZigBuildTask @Inject constructor(
         execOperations.exec {
             workingDir = sourceDir.get().asFile
             commandLine(
-                "zig", "build", "-Demit-lib-vt", "-Dtarget=${zigTarget.get()}",
-                "-Dsimd=false", "-Doptimize=ReleaseFast",
-                "--cache-dir", cacheDir.get().asFile.absolutePath,
-                "--prefix", prefix.absolutePath,
+                listOf("zig", "build") + GHOSTTY_BUILD_OPTIONS + listOf(
+                    "-Dtarget=${zigTarget.get()}", "-Doptimize=ReleaseFast",
+                    "--cache-dir", cacheDir.get().asFile.absolutePath,
+                    "--prefix", prefix.absolutePath,
+                )
             )
         }
         val lib = libDir.get().asFile
@@ -77,26 +78,25 @@ abstract class GhosttyZigBuildTask @Inject constructor(
     }
 }
 
-private data class GhosttyAbi(
+internal data class GhosttyAbi(
     val abi: String,
     val zigTarget: String,
     val taskName: String,
 )
 
+// Zig defaults the Android API level to 29 when the target omits it
+// (std.Target.Os.VersionRange.default).
+internal val ghosttyAbis = listOf(
+    GhosttyAbi("arm64-v8a", "aarch64-linux-android.21", "ghosttyBuildArm64"),
+    GhosttyAbi("armeabi-v7a", "arm-linux-androideabi.21", "ghosttyBuildArmv7"),
+    GhosttyAbi("x86_64", "x86_64-linux-android.21", "ghosttyBuildX64"),
+    GhosttyAbi("x86", "x86-linux-android.21", "ghosttyBuildX86"),
+)
+
 class GhosttyNativePlugin : Plugin<Project> {
     override fun apply(project: Project) {
         val env = GhosttyEnv(project)
-        val ghosttyCacheDir = env.buildDir.map { it.dir("zig-cache") }
         val ghosttyVtDir = project.layout.buildDirectory.dir("ghostty-vt")
-
-        // Zig defaults the Android API level to 29 when the target omits it
-        // (std.Target.Os.VersionRange.default).
-        val ghosttyAbis = listOf(
-            GhosttyAbi("arm64-v8a", "aarch64-linux-android.21", "ghosttyBuildArm64"),
-            GhosttyAbi("armeabi-v7a", "arm-linux-androideabi.21", "ghosttyBuildArmv7"),
-            GhosttyAbi("x86_64", "x86_64-linux-android.21", "ghosttyBuildX64"),
-            GhosttyAbi("x86", "x86-linux-android.21", "ghosttyBuildX86"),
-        )
 
         val ghosttyBuildTasks = ghosttyAbis.map { (abi, target, taskName) ->
             project.tasks.register<GhosttyZigBuildTask>(taskName) {
@@ -106,7 +106,7 @@ class GhosttyNativePlugin : Plugin<Project> {
                 patches.from(env.patches)
                 sourceDir.set(env.sourceDir)
                 prefixDir.set(env.buildDir.map { it.dir("out-$abi") })
-                cacheDir.set(ghosttyCacheDir)
+                cacheDir.set(env.cacheDir)
                 libDir.set(ghosttyVtDir.map { it.dir(abi) })
                 if (abi == "arm64-v8a") {
                     includeDir.set(ghosttyVtDir.map { it.dir("include") })
